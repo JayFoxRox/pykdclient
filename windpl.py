@@ -585,7 +585,8 @@ def hexasc(buf):
       ascii += x
     else:
       ascii += "."
-    if ( ++count % 16 ) == 0:
+    count += 1
+    if ( count % 16 ) == 0:
       if ( count < length ):
         out += " " + ascii + "\n%04x  " % count
       else:
