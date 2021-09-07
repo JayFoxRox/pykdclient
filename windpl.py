@@ -233,7 +233,7 @@ class DebugConnection:
             #         count = client.sysread(buf, 1)
             #         if count == 0:
             #             die("eof")
-            #             # print("readLoop count %x\n", ord(buf)
+            #             # print("client.read count %x\n", ord(buf)
             #         # FH.blocking(0)
             buf = self.recv(wanted - total)
 
@@ -319,9 +319,6 @@ class DebugContext:
         #         self.client.syswrite(data)
         self.client.write(data)
 
-    def readLoop(self, wanted):
-        return self.client.read(wanted)
-
     def handlePacket(self):
         ptype, buf = self.getPacket()
 
@@ -340,35 +337,35 @@ class DebugContext:
     def getPacket(self):
         ptype = None
         payload = bytearray([])
-        buf = self.readLoop(4)
+        buf = self.client.read(4)
         plh = unpack("I", buf)
         if plh in (PACKET_LEADER, CONTROL_PACKET_LEADER):
             print("Got packet leader: %08x" % plh)
 
-            buf = self.readLoop(2)
+            buf = self.client.read(2)
             ptype = unpack("H", buf)
             print("Packet type: " + str(ptype) + "")
 
-            buf = self.readLoop(2)
+            buf = self.client.read(2)
             bc = unpack("H", buf)
             print("Byte count: " + str(bc) + "")
 
-            buf = self.readLoop(4)
+            buf = self.client.read(4)
             pid = unpack("I", buf)
             self.nextpid = pid
             print("Packet ID: %08x" % pid)
 
-            buf = self.readLoop(4)
+            buf = self.client.read(4)
             ck = unpack("I", buf)
             print("Checksum: %08x" % ck)
 
             if bc:
-                payload = self.readLoop(bc)
+                payload = self.client.read(bc)
 
             # send ack if it's a non-control packet
             if plh == PACKET_LEADER:
                 # packet trailer
-                trail = self.readLoop(1)
+                trail = self.client.read(1)
                 print(hexformat(trail))
                 if trail[0] == 0xAA:
                     # print("sending Ack\n";#)
