@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# win/xbox KD client
-#
+"""Win/xbox KernelDebug client."""
+
 # Copyright (C) 2007 SecureWorks, Inc.
 # Copyright (C) 2013 espes
 # Copyright (C) 2017 Jannik Vogel
@@ -41,6 +41,8 @@
 # WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
+# pylint: disable = invalid-name, missing-function-docstring, fixme
+
 # use IO::Select
 # use IO::Socket
 # use File::stat
@@ -48,26 +50,84 @@
 # use strict
 
 import argparse
-import socket
+import os
 import sys
 import struct
 from struct import pack
 
 from windpl_extra import logical2physical
 
+PACKET_LEADER = 0x30303030
+CONTROL_PACKET_LEADER = 0x69696969
+
+PACKET_TYPE_UNUSED = 0
+PACKET_TYPE_KD_STATE_CHANGE32 = 1
+PACKET_TYPE_KD_STATE_MANIPULATE = 2
+PACKET_TYPE_KD_DEBUG_IO = 3
+PACKET_TYPE_KD_ACKNOWLEDGE = 4
+PACKET_TYPE_KD_RESEND = 5
+PACKET_TYPE_KD_RESET = 6
+PACKET_TYPE_KD_STATE_CHANGE64 = 7
+PACKET_TYPE_MAX = 8
+
+# PACKET_TYPE_KD_DEBUG_IO apis
+# DBGKD_DEBUG_IO
+DbgKdPrintStringApi = 0x00003230
+DbgKdGetStringApi = 0x00003231
+
+# PACKET_TYPE_KD_STATE_CHANGE states
+# X86_NT5_DBGKD_WAIT_STATE_CHANGE64
+DbgKdExceptionStateChange = 0x00003030
+DbgKdLoadSymbolsStateChange = 0x00003031
+
+# PACKET_TYPE_KD_STATE_MANIPULATE api numbers
+# DBGKD_MANIPULATE_STATE64
+DbgKdReadVirtualMemoryApi = 0x00003130
+DbgKdWriteVirtualMemoryApi = 0x00003131
+DbgKdGetContextApi = 0x00003132
+DbgKdSetContextApi = 0x00003133
+DbgKdWriteBreakPointApi = 0x00003134
+DbgKdRestoreBreakPointApi = 0x00003135
+DbgKdContinueApi = 0x00003136
+DbgKdReadControlSpaceApi = 0x00003137
+DbgKdWriteControlSpaceApi = 0x00003138
+DbgKdReadIoSpaceApi = 0x00003139
+DbgKdWriteIoSpaceApi = 0x0000313A
+DbgKdRebootApi = 0x0000313B
+DbgKdContinueApi2 = 0x0000313C
+DbgKdReadPhysicalMemoryApi = 0x0000313D
+DbgKdWritePhysicalMemoryApi = 0x0000313E
+DbgKdSetSpecialCallApi = 0x00003140
+DbgKdClearSpecialCallsApi = 0x00003141
+DbgKdSetInternalBreakPointApi = 0x00003142
+DbgKdGetInternalBreakPointApi = 0x00003143
+DbgKdReadIoSpaceExtendedApi = 0x00003144
+DbgKdWriteIoSpaceExtendedApi = 0x00003145
+DbgKdGetVersionApi = 0x00003146
+DbgKdWriteBreakPointExApi = 0x00003147
+DbgKdRestoreBreakPointExApi = 0x00003148
+DbgKdCauseBugCheckApi = 0x00003149
+DbgKdSwitchProcessor = 0x00003150
+DbgKdPageInApi = 0x00003151
+DbgKdReadMachineSpecificRegister = 0x00003152
+DbgKdWriteMachineSpecificRegister = 0x00003153
+DbgKdSearchMemoryApi = 0x00003156
+DbgKdGetBusDataApi = 0x00003157
+DbgKdSetBusDataApi = 0x00003158
+DbgKdCheckLowMemoryApi = 0x00003159
+
 
 def substr(buf, start, length=None):
-    if length == None:
+    if length is None:
         return buf[start:]
     return buf[start : start + length]
 
 
 def patch_substr(buf, start, length, fmt, data=None):
-    if data == None:
-        data = fmt
+    if data is None:
         return buf[0:start] + fmt + buf[start + length :]
-    else:
-        return buf[0:start] + struct.pack(fmt, data) + buf[start + length :]
+
+    return buf[0:start] + struct.pack(fmt, data) + buf[start + length :]
 
 
 def unpack(fmt, data):
@@ -77,48 +137,51 @@ def unpack(fmt, data):
 def hexformat(buf):
     length = len(buf)
     if length == 0:
-        return
+        return None
+
     b = "0000  "
     c = 0
     for x in buf:
         c += 1
         b += "%02x " % x
-        if (c % 16) == 0:
-            if c < length:
-                b += "\n%04x " % c
-    if substr(b, -1, 1) != "\n":
+        if (c % 16) == 0 and c < length:
+            b += "\n%04x " % c
+
+    if b[-1] != "\n":
         b += "\n"
+
     return b
 
 
 def hexasc(buf):
     length = len(buf)
     if length == 0:
-        return
+        return None
+
     count = 0
-    ascii = ""
+    ascii_string = ""
     out = "0000  "
     for x in buf:
         c = ord(x)
         out += "%02x " % c
-        if (c > 0x1F) and (c < 0x7F):
-            ascii += x
+        if 0x1F < c < 0x7F:
+            ascii_string += x
         else:
-            ascii += "."
+            ascii_string += "."
         count += 1
         if (count % 16) == 0:
             if count < length:
-                out += " " + ascii + "\n%04x  " % count
+                out += " " + ascii_string + "\n%04x  " % count
             else:
-                out += " " + ascii + "\n"
-                ascii = ""
+                out += " " + ascii_string + "\n"
+                ascii_string = ""
 
     padding = 0
-    if ascii:
+    if ascii_string:
         padding = 48 - ((count % 16) * 3)
 
     out += " " * padding
-    out += " " + ascii + "\n"
+    out += " " + ascii_string + "\n"
     return out
 
 
@@ -130,78 +193,71 @@ def cksum(buf):
     return v
 
 
-def packetHeader(d):
-    header = "\x30\x30\x30\x30".encode("utf-8")  # packet leader
-    header += "\x02\x00".encode("utf-8")  # packet type PACKET_TYPE_KD_STATE_MANIPULATE
-    header += pack("H", len(d))  # sizeof data
-    header += pack("I", nextpid)  # packet id
-    header += pack("I", cksum(d))  # checksum of data
-    return header
+class DebugConnection:
+    """Models a connection to the target device (e.g. FIFO, socket)."""
+
+    def __init__(self, endpoint):
+        self.endpoint = endpoint
+        self._connection = None
+
+    def connect(self):
+        # FIXME: Add support for TCP sockets too
+        # self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # self.client.connect(endpoint)
+        flags = os.O_RDWR
+        if os.name == 'nt':
+            flags |= os.O_BINARY
+
+        self._connection = os.open(self.endpoint, flags)
+
+    def disconnect(self):
+        pass
+
+    def recv(self, max_bytes):
+        """Receives up to `max_bytes` bytes from the connection."""
+        return os.read(self._connection, max_bytes)
+
+    def send(self, buf):
+        return os.write(self._connection, buf)
+
+    def read(self, wanted):
+        """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
+        total = 0
+        outbuf = bytearray([])
+        while total < wanted:
+            # if False:
+            #     if serial:
+            #         (count, buf) = serial.read(1)
+            #     else:
+            #         # FH.blocking(1)
+            #         count = client.sysread(buf, 1)
+            #         if count == 0:
+            #             die("eof")
+            #             # print("readLoop count %x\n", ord(buf)
+            #         # FH.blocking(0)
+            buf = self.recv(wanted - total)
+
+            count = len(buf)
+            if count:
+                total += count
+                outbuf += buf
+
+        return outbuf
+
+    def write(self, buffer):
+        """Writes `buffer` to the connection, blocking as necessary."""
+
+        while len(buffer):
+            written = self.send(buffer)
+            buffer = buffer[written:]
 
 
 class DebugContext:
-    PACKET_LEADER = 0x30303030
-    CONTROL_PACKET_LEADER = 0x69696969
-
-    PACKET_TYPE_UNUSED = 0
-    PACKET_TYPE_KD_STATE_CHANGE32 = 1
-    PACKET_TYPE_KD_STATE_MANIPULATE = 2
-    PACKET_TYPE_KD_DEBUG_IO = 3
-    PACKET_TYPE_KD_ACKNOWLEDGE = 4
-    PACKET_TYPE_KD_RESEND = 5
-    PACKET_TYPE_KD_RESET = 6
-    PACKET_TYPE_KD_STATE_CHANGE64 = 7
-    PACKET_TYPE_MAX = 8
-
-    # PACKET_TYPE_KD_DEBUG_IO apis
-    # DBGKD_DEBUG_IO
-    DbgKdPrintStringApi = 0x00003230
-    DbgKdGetStringApi = 0x00003231
-
-    # PACKET_TYPE_KD_STATE_CHANGE states
-    # X86_NT5_DBGKD_WAIT_STATE_CHANGE64
-    DbgKdExceptionStateChange = 0x00003030
-    DbgKdLoadSymbolsStateChange = 0x00003031
-
-    # PACKET_TYPE_KD_STATE_MANIPULATE api numbers
-    # DBGKD_MANIPULATE_STATE64
-    DbgKdReadVirtualMemoryApi = 0x00003130
-    DbgKdWriteVirtualMemoryApi = 0x00003131
-    DbgKdGetContextApi = 0x00003132
-    DbgKdSetContextApi = 0x00003133
-    DbgKdWriteBreakPointApi = 0x00003134
-    DbgKdRestoreBreakPointApi = 0x00003135
-    DbgKdContinueApi = 0x00003136
-    DbgKdReadControlSpaceApi = 0x00003137
-    DbgKdWriteControlSpaceApi = 0x00003138
-    DbgKdReadIoSpaceApi = 0x00003139
-    DbgKdWriteIoSpaceApi = 0x0000313A
-    DbgKdRebootApi = 0x0000313B
-    DbgKdContinueApi2 = 0x0000313C
-    DbgKdReadPhysicalMemoryApi = 0x0000313D
-    DbgKdWritePhysicalMemoryApi = 0x0000313E
-    DbgKdSetSpecialCallApi = 0x00003140
-    DbgKdClearSpecialCallsApi = 0x00003141
-    DbgKdSetInternalBreakPointApi = 0x00003142
-    DbgKdGetInternalBreakPointApi = 0x00003143
-    DbgKdReadIoSpaceExtendedApi = 0x00003144
-    DbgKdWriteIoSpaceExtendedApi = 0x00003145
-    DbgKdGetVersionApi = 0x00003146
-    DbgKdWriteBreakPointExApi = 0x00003147
-    DbgKdRestoreBreakPointExApi = 0x00003148
-    DbgKdCauseBugCheckApi = 0x00003149
-    DbgKdSwitchProcessor = 0x00003150
-    DbgKdPageInApi = 0x00003151
-    DbgKdReadMachineSpecificRegister = 0x00003152
-    DbgKdWriteMachineSpecificRegister = 0x00003153
-    DbgKdSearchMemoryApi = 0x00003156
-    DbgKdGetBusDataApi = 0x00003157
-    DbgKdSetBusDataApi = 0x00003158
-    DbgKdCheckLowMemoryApi = 0x00003159
+    """Models a KernelDebug session."""
 
     def __init__(self) -> None:
         self.timeout = 10  # max time to wait on packet
-        self.running = 1
+        self.running = True
 
         self.kernelcontext = {}
         self.kernelcontext["peb"] = 0
@@ -214,7 +270,7 @@ class DebugContext:
         self.processcontext["pid"] = 0
         self.processcontext["eprocess"] = 0
         self.processcontext["dtb"] = 0
-        self.pcontext = kernelcontext
+        self.pcontext = self.kernelcontext
         self.nextpid = 1
         self.breakpoints = {}
 
@@ -225,27 +281,27 @@ class DebugContext:
         self.client = None
 
     def connect(self, endpoint):
-        if False:
-            ds = stat(dev) or die("$!")
-            if S_ISCHR(ds.mode):
-                # require Device::SerialPort
-                # FIXME: serial = tie( *FH, 'Device::SerialPort', "dev" ) or die("Can't tie: $!"
-                serial.baudrate(115200)
-                serial.parity("none")
-                serial.databits(8)
-                serial.stopbits(1)
-                serial.handshake("none")
-                serial.write_settings or die("failed writing settings")
-                FH.blocking(0)
-            elif S_ISSOCK(ds.mode):
-                client = None  # FIXME: IO::Socket::UNIX->new(Type = SOCK_STREAM, Peer = dev) or die("Can't create socket!")
-            else:
-                die("dev not a character device or a socket")
+        # if False:
+        #     ds = stat(dev) or die("$!")
+        #     if S_ISCHR(ds.mode):
+        #         # require Device::SerialPort
+        #         # FIXME: serial = tie( *FH, 'Device::SerialPort', "dev" ) or die("Can't tie: $!"
+        #         serial.baudrate(115200)
+        #         serial.parity("none")
+        #         serial.databits(8)
+        #         serial.stopbits(1)
+        #         serial.handshake("none")
+        #         serial.write_settings or die("failed writing settings")
+        #         FH.blocking(0)
+        #     elif S_ISSOCK(ds.mode):
+        #         client = None  # FIXME: IO::Socket::UNIX->new(Type = SOCK_STREAM, Peer = dev) or die("Can't create socket!")
+        #     else:
+        #         die("dev not a character device or a socket")
 
-        # FIXME: Add support for TCP sockets too
-        self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         print(f"Connecting to '{endpoint}'")
-        self.client.connect(endpoint)
+
+        self.client = DebugConnection(endpoint)
+        self.client.connect()
 
     def run(self):
         self.sendReset()
@@ -256,56 +312,37 @@ class DebugContext:
         # FIXME: windpl_loop.py
 
     def writeDev(self, data):
-        if False:
-            if serial:
-                serial.write(data)
-            else:
-                self.client.syswrite(data)
-        self.client.send(data)
+        # if False:
+        #     if serial:
+        #         serial.write(data)
+        #     else:
+        #         self.client.syswrite(data)
+        self.client.write(data)
 
     def readLoop(self, wanted):
-        total = 0
-        outbuf = bytearray([])
-        while total < wanted:
-            if False:
-                if serial:
-                    (count, buf) = serial.read(1)
-                else:
-                    # FH.blocking(1)
-                    count = client.sysread(buf, 1)
-                    if count == 0:
-                        die("eof")
-                        # print("readLoop count %x\n", ord(buf)
-                    # FH.blocking(0)
-            buf = self.client.recv(wanted - total)
-            count = len(buf)
-            if count:
-                total += count
-                outbuf += buf
-        return outbuf
+        return self.client.read(wanted)
 
     def handlePacket(self):
         ptype, buf = self.getPacket()
 
         if len(buf) == 0:
-            return
+            return None
 
-        if ptype == self.PACKET_TYPE_KD_STATE_MANIPULATE:
+        if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
             self.handleStateManipulate(buf)
-        elif ptype == self.PACKET_TYPE_KD_DEBUG_IO:
+        elif ptype == PACKET_TYPE_KD_DEBUG_IO:
             self.handleDebugIO(buf)
-        elif ptype == self.PACKET_TYPE_KD_STATE_CHANGE64:
+        elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
             self.handleStateChange(buf)
 
-        return (ptype, buf)
+        return ptype, buf
 
     def getPacket(self):
-        global nextpid
         ptype = None
         payload = bytearray([])
         buf = self.readLoop(4)
         plh = unpack("I", buf)
-        if (plh == self.PACKET_LEADER) or (plh == self.CONTROL_PACKET_LEADER):
+        if plh in (PACKET_LEADER, CONTROL_PACKET_LEADER):
             print("Got packet leader: %08x" % plh)
 
             buf = self.readLoop(2)
@@ -318,7 +355,7 @@ class DebugContext:
 
             buf = self.readLoop(4)
             pid = unpack("I", buf)
-            nextpid = pid
+            self.nextpid = pid
             print("Packet ID: %08x" % pid)
 
             buf = self.readLoop(4)
@@ -329,25 +366,25 @@ class DebugContext:
                 payload = self.readLoop(bc)
 
             # send ack if it's a non-control packet
-            if plh == self.PACKET_LEADER:
+            if plh == PACKET_LEADER:
                 # packet trailer
                 trail = self.readLoop(1)
                 print(hexformat(trail))
                 if trail[0] == 0xAA:
                     # print("sending Ack\n";#)
                     self.sendAck()
-        return (ptype, payload)
+        return ptype, payload
 
-    def handleDebugIO(self, buf):
+    def handleDebugIO(self, buf):  # pylint: disable = no-self-use
         apiNumber = unpack("I", substr(buf, 0, 4))
-        if apiNumber == self.DbgKdPrintStringApi:
+        if apiNumber == DbgKdPrintStringApi:
             print("DBG PRINT STRING: " + substr(buf, 0x10).decode("utf-8"))
 
     def handleStateChange(self, buf):
         newState = unpack("I", substr(buf, 0, 4))
         print("State Change: %08x" % newState)
 
-        if newState == self.DbgKdExceptionStateChange:
+        if newState == DbgKdExceptionStateChange:
             exceptions = {
                 0xC0000005: "EXCEPTION_ACCESS_VIOLATION",
                 0xC000008C: "EXCEPTION_ARRAY_BOUNDS_EXCEEDED",
@@ -388,12 +425,12 @@ class DebugContext:
             print("Exception address = %08x" % address)
             print("Number parameters = %08x" % parameters)
 
-            running = 0
+            self.running = False
 
             # my @v = getVersionInfo()
             # version  = v[0]
             # $kernelbase = v[2]
-        elif newState == self.DbgKdLoadSymbolsStateChange:
+        elif newState == DbgKdLoadSymbolsStateChange:
             # DBGKD_LOAD_SYMBOLS64
 
             filename = substr(buf, 0x3B8)
@@ -409,24 +446,24 @@ class DebugContext:
         apiNumber = unpack("I", substr(buf, 0, 4))
         print("State Manipulate: %08x" % apiNumber)
 
-        if apiNumber == self.DbgKdWriteBreakPointApi:
+        if apiNumber == DbgKdWriteBreakPointApi:
             bp = "%08x" % unpack("I", substr(buf, 16, 4))
             handle = unpack("I", substr(buf, 20, 4))
             print("Breakpoint " + handle + " set at " + bp + "")
             self.breakpoints[bp] = handle
-        elif apiNumber == self.DbgKdRestoreBreakPointApi:
+        elif apiNumber == DbgKdRestoreBreakPointApi:
             handle = unpack("I", substr(buf, 16, 4))
             print("Breakpoint " + handle + " cleared")
-        elif apiNumber == self.DbgKdGetVersionApi:
+        elif apiNumber == DbgKdGetVersionApi:
             version = substr(buf, 16)
             print("VERS: " + hexformat(version))
-        elif apiNumber == self.DbgKdReadVirtualMemoryApi:
+        elif apiNumber == DbgKdReadVirtualMemoryApi:
             vmem = substr(buf, 56)
             print("VMEM:\n" + hexasc(vmem))
-        elif apiNumber == self.DbgKdReadPhysicalMemoryApi:
+        elif apiNumber == DbgKdReadPhysicalMemoryApi:
             pmem = substr(buf, 56)
             print("PMEM:\n" + hexasc(pmem))
-        elif apiNumber == self.DbgKdReadControlSpaceApi:
+        elif apiNumber == DbgKdReadControlSpaceApi:
             controlspace = substr(buf, 56)
             print("CNTL: " + hexformat(controlspace))
         else:
@@ -436,8 +473,8 @@ class DebugContext:
         ack = "\x69\x69\x69\x69\x04\x00\x00\x00\x00\x00\x80\x80\x00\x00\x00\x00".encode(
             "utf-8"
         )
-        print(nextpid)
-        ack = patch_substr(ack, 8, 4, "I", nextpid)
+        print(self.nextpid)
+        ack = patch_substr(ack, 8, 4, "I", self.nextpid)
 
         print(hexformat(ack))
         self.writeDev(ack)
@@ -455,44 +492,47 @@ class DebugContext:
         context = {}
         self.sendDbgKdGetContext()
         buf = self.waitStateManipulate(DbgKdGetContextApi)
-        if len(buf) > 204:
-            ctx = substr(buf, 56)
 
-            # print("CTXT: ", hexformat($context)
-            context["ContextFlags"] = unpack("I", substr(ctx, 0, 4))
-            context["DR0"] = unpack("I", substr(ctx, 4, 4))
-            context["DR1"] = unpack("I", substr(ctx, 8, 4))
-            context["DR2"] = unpack("I", substr(ctx, 12, 4))
-            context["DR3"] = unpack("I", substr(ctx, 16, 4))
-            context["DR6"] = unpack("I", substr(ctx, 20, 4))
-            context["DR7"] = unpack("I", substr(ctx, 24, 4))
-            context["fp.ControlWord"] = unpack("I", substr(ctx, 28, 4))
-            context["fp.StatusWord"] = unpack("I", substr(ctx, 32, 4))
-            context["fp.TagWord"] = unpack("I", substr(ctx, 36, 4))
-            context["fp.ErrorOffset"] = unpack("I", substr(ctx, 40, 4))
-            context["fp.ErrorSelector"] = unpack("I", substr(ctx, 44, 4))
-            context["fp.DataOffset"] = unpack("I", substr(ctx, 48, 4))
-            context["fp.DataSelector"] = unpack("I", substr(ctx, 52, 4))
-            context["fp.RegisterArea"] = substr(ctx, 56, 80)
-            context["fp.Cr0NpxState"] = unpack("I", substr(ctx, 136, 4))
-            context["GS"] = unpack("I", substr(ctx, 140, 4))
-            context["FS"] = unpack("I", substr(ctx, 144, 4))
-            context["ES"] = unpack("I", substr(ctx, 148, 4))
-            context["DS"] = unpack("I", substr(ctx, 152, 4))
-            context["EDI"] = unpack("I", substr(ctx, 156, 4))
-            context["ESI"] = unpack("I", substr(ctx, 160, 4))
-            context["EBX"] = unpack("I", substr(ctx, 164, 4))
-            context["EDX"] = unpack("I", substr(ctx, 168, 4))
-            context["ECX"] = unpack("I", substr(ctx, 172, 4))
-            context["EAX"] = unpack("I", substr(ctx, 176, 4))
-            context["EBP"] = unpack("I", substr(ctx, 180, 4))
-            context["EIP"] = unpack("I", substr(ctx, 184, 4))
-            context["CS"] = unpack("I", substr(ctx, 188, 4))
-            context["Eflags"] = unpack("I", substr(ctx, 192, 4))
-            context["ESP"] = unpack("I", substr(ctx, 196, 4))
-            context["SS"] = unpack("I", substr(ctx, 200, 4))
-            context["leftovers"] = substr(ctx, 204)
-            return context
+        if len(buf) <= 204:
+            return None
+
+        ctx = buf[56:]
+
+        # print("CTXT: ", hexformat($context)
+        context["ContextFlags"] = unpack("I", ctx[0:4])
+        context["DR0"] = unpack("I", ctx[4:8])
+        context["DR1"] = unpack("I", ctx[8 : 8 + 4])
+        context["DR2"] = unpack("I", ctx[12 : 12 + 4])
+        context["DR3"] = unpack("I", ctx[16 : 16 + 4])
+        context["DR6"] = unpack("I", ctx[20 : 20 + 4])
+        context["DR7"] = unpack("I", ctx[24 : 24 + 4])
+        context["fp.ControlWord"] = unpack("I", ctx[28 : 28 + 4])
+        context["fp.StatusWord"] = unpack("I", ctx[32 : 32 + 4])
+        context["fp.TagWord"] = unpack("I", ctx[36 : 36 + 4])
+        context["fp.ErrorOffset"] = unpack("I", ctx[40 : 40 + 4])
+        context["fp.ErrorSelector"] = unpack("I", ctx[44 : 44 + 4])
+        context["fp.DataOffset"] = unpack("I", ctx[48 : 48 + 4])
+        context["fp.DataSelector"] = unpack("I", ctx[52 : 52 + 4])
+        context["fp.RegisterArea"] = ctx[56 : 56 + 80]
+        context["fp.Cr0NpxState"] = unpack("I", ctx[136 : 136 + 4])
+        context["GS"] = unpack("I", ctx[140 : 140 + 4])
+        context["FS"] = unpack("I", ctx[144 : 144 + 4])
+        context["ES"] = unpack("I", ctx[148 : 148 + 4])
+        context["DS"] = unpack("I", ctx[152 : 152 + 4])
+        context["EDI"] = unpack("I", ctx[156 : 156 + 4])
+        context["ESI"] = unpack("I", ctx[160 : 160 + 4])
+        context["EBX"] = unpack("I", ctx[164 : 164 + 4])
+        context["EDX"] = unpack("I", ctx[168 : 168 + 4])
+        context["ECX"] = unpack("I", ctx[172 : 172 + 4])
+        context["EAX"] = unpack("I", ctx[176 : 176 + 4])
+        context["EBP"] = unpack("I", ctx[180 : 180 + 4])
+        context["EIP"] = unpack("I", ctx[184:188])
+        context["CS"] = unpack("I", ctx[188:192])
+        context["Eflags"] = unpack("I", ctx[192:196])
+        context["ESP"] = unpack("I", ctx[196:200])
+        context["SS"] = unpack("I", ctx[200:204])
+        context["leftovers"] = ctx[204:]
+        return context
 
     def setContext(self, context):
         ctx = pack("I", context["ContextFlags"])
@@ -568,46 +608,55 @@ class DebugContext:
         print("Module list = %08x" % v[3])
         print("Debugger data = %08x" % v[4])
 
-    if False:
+    # if False:
+    #     def getKernelModules():
+    #         save = pcontext
+    #         pcontext = kernelcontext  # this procedure is kernel context only
+    #         modules = []
+    #         v = getVersionInfo()
+    #         flink = readDword(v[3])
+    #         modlist = walkList(flink)
+    #         for mod in modlist:
+    #
+    #             # print("module at %08x\n", $mod
+    #             buf = readVirtualMemory(mod, 0x34)
+    #             if len(buf) == 0x34:
+    #                 base = unpack("I", substr(buf, 0x18, 4))
+    #                 if base == 0:
+    #                     continue
+    #                 entry = unpack("I", substr(buf, 0x1C, 4))
+    #                 size = unpack("I", substr(buf, 0x20, 4))
+    #                 path = substr(buf, 0x24, 8)
+    #                 name = substr(buf, 0x2C, 8)
+    #                 modules[base]["name"] = unicodeStructToAscii(name)
+    #                 modules[base]["path"] = unicodeStructToAscii(path)
+    #                 modules[base]["size"] = size
+    #                 modules[base]["entry"] = entry
+    #                 pcontext = save
+    #         return modules
+    #
+    #     def unicodeStructToAscii(struct):
+    #         if len(struct) != 8:
+    #             return
+    #         length = unpack("H", substr(struct, 0, 2))
+    #         vaddr = unpack("I", substr(struct, 4, 4))
+    #         buf = readVirtualMemory(vaddr, length)
+    #         if len(buf) == length:
+    #             buf = None  # FIXME: =~ s/\x00//g;  # ok not really Unicode to Ascii
+    #         return buf
 
-        def getKernelModules():
-            save = pcontext
-            pcontext = kernelcontext  # this procedure is kernel context only
-            modules = []
-            v = getVersionInfo()
-            flink = readDword(v[3])
-            modlist = walkList(flink)
-            for mod in modlist:
-
-                # print("module at %08x\n", $mod
-                buf = readVirtualMemory(mod, 0x34)
-                if len(buf) == 0x34:
-                    base = unpack("I", substr(buf, 0x18, 4))
-                    if base == 0:
-                        continue
-                    entry = unpack("I", substr(buf, 0x1C, 4))
-                    size = unpack("I", substr(buf, 0x20, 4))
-                    path = substr(buf, 0x24, 8)
-                    name = substr(buf, 0x2C, 8)
-                    modules[base]["name"] = unicodeStructToAscii(name)
-                    modules[base]["path"] = unicodeStructToAscii(path)
-                    modules[base]["size"] = size
-                    modules[base]["entry"] = entry
-                    pcontext = save
-            return modules
-
-        def unicodeStructToAscii(struct):
-            if len(struct) != 8:
-                return
-            length = unpack("H", substr(struct, 0, 2))
-            vaddr = unpack("I", substr(struct, 4, 4))
-            buf = readVirtualMemory(vaddr, length)
-            if len(buf) == length:
-                buf = None  # FIXME: =~ s/\x00//g;  # ok not really Unicode to Ascii
-            return buf
+    def packetHeader(self, d):
+        header = "\x30\x30\x30\x30".encode("utf-8")  # packet leader
+        header += "\x02\x00".encode(
+            "utf-8"
+        )  # packet type PACKET_TYPE_KD_STATE_MANIPULATE
+        header += pack("H", len(d))  # sizeof data
+        header += pack("I", self.nextpid)  # packet id
+        header += pack("I", cksum(d))  # checksum of data
+        return header
 
     def sendManipulateStatePacket(self, d):
-        h = packetHeader(d)
+        h = self.packetHeader(d)
 
         print("SEND: " + hexformat(h) + hexformat(d))
         self.writeDev(h)
@@ -618,7 +667,7 @@ class DebugContext:
 
         # print("Sending DbgKdContinue2Api packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdContinueApi2)
+        d = patch_substr(d, 0, 4, "I", DbgKdContinueApi2)
         d = patch_substr(d, 8, 4, "I", 0x00010001)
         d = patch_substr(d, 16, 4, "I", 0x00010001)
         d = patch_substr(d, 24, 4, "I", 0x400)  # TraceFlag
@@ -629,7 +678,7 @@ class DebugContext:
 
         # print("Sending DbgKdGetVersionApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdGetVersionApi)
+        d = patch_substr(d, 0, 4, "I", DbgKdGetVersionApi)
         self.sendManipulateStatePacket(d)
 
     def sendDbgKdWriteBreakPoint(self, bp):
@@ -637,7 +686,7 @@ class DebugContext:
 
         # print("Sending DbgKdWriteBreakPointApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdWriteBreakPointApi)
+        d = patch_substr(d, 0, 4, "I", DbgKdWriteBreakPointApi)
         d = patch_substr(d, 16, 4, "I", bp)
         d = patch_substr(d, 20, 4, "I", self.curbp)
         self.curbp += 1
@@ -648,7 +697,7 @@ class DebugContext:
 
             # print("Sending DbgKdRestoreBreakPointApi packet\n"
             d = bytearray([0] * 56)
-            d = patch_substr(d, 0, 4, "I", self.DbgKdRestoreBreakPointApi)
+            d = patch_substr(d, 0, 4, "I", DbgKdRestoreBreakPointApi)
             d = patch_substr(d, 16, 4, "I", self.breakpoints[bp])
             self.sendManipulateStatePacket(d)
             del self.breakpoints[bp]
@@ -674,21 +723,21 @@ class DebugContext:
         d = patch_substr(d, 24, 4, "I", 84)
         d += self.controlspace
         self.sendManipulateStatePacket(d)
-        controlspacesent = 1
+        self.controlspacesent = True
 
     def sendDbgKdGetContext(self):
 
         # print("Sending DbgKdGetContextApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdGetContextApi)
+        d = patch_substr(d, 0, 4, "I", DbgKdGetContextApi)
         self.sendManipulateStatePacket(d)
 
     def sendDbgKdSetContext(self, ctx):
 
         # print("Sending DbgKdSetContextApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdSetContextApi)
-        d = patch_substr(d, 16, 4, substr(ctx, 0, 4))
+        d = patch_substr(d, 0, 4, "I", DbgKdSetContextApi)
+        d = patch_substr(d, 16, 4, ctx[0:4])
         d += ctx
         self.sendManipulateStatePacket(d)
 
@@ -696,7 +745,7 @@ class DebugContext:
 
         # print("Sending DbgKdReadPhysicalMemoryApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdReadPhysicalMemoryApi)
+        d = patch_substr(d, 0, 4, "I", DbgKdReadPhysicalMemoryApi)
         d = patch_substr(d, 16, 4, "I", addr)
         d = patch_substr(d, 24, 4, "I", readlen)
         self.sendManipulateStatePacket(d)
@@ -705,7 +754,7 @@ class DebugContext:
 
         # print("Sending DbgKdReadVirtualMemoryApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdReadVirtualMemoryApi)
+        d = patch_substr(d, 0, 4, "I", DbgKdReadVirtualMemoryApi)
         d = patch_substr(d, 16, 4, "I", vaddr)
         d = patch_substr(d, 24, 4, "I", readlen)
         self.sendManipulateStatePacket(d)
@@ -715,7 +764,7 @@ class DebugContext:
 
         # print("Sending DbgKdWriteVirtualMemoryApi packet\n"
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", self.DbgKdWriteVirtualMemoryApi)
+        d = patch_substr(d, 0, 4, "I", DbgKdWriteVirtualMemoryApi)
         d = patch_substr(d, 16, 4, "I", vaddr)
         d = patch_substr(d, 24, 4, "I", writelen)
         d += data
@@ -776,13 +825,13 @@ class DebugContext:
             while length > 0:
                 if length < chunksize:
                     self.sendDbgKdWriteVirtualMemory(addr, buf)
-                    self.waitStateManipulate(self.DbgKdWriteVirtualMemoryApi)
+                    self.waitStateManipulate(DbgKdWriteVirtualMemoryApi)
                     length = 0
                 else:
                     self.sendDbgKdWriteVirtualMemory(
                         addr, substr(buf, offset, chunksize)
                     )
-                    self.waitStateManipulate(self.DbgKdWriteVirtualMemoryApi)
+                    self.waitStateManipulate(DbgKdWriteVirtualMemoryApi)
                     length -= chunksize
                     offset += chunksize
                     addr += chunksize
@@ -791,89 +840,85 @@ class DebugContext:
             # FIXME: Logic sucks here..
             if distance_to_page_boundary > length:
                 physaddr = logical2physical(addr)
-                writePhysicalMemory(physaddr, buf)
+                self.writePhysicalMemory(physaddr, buf)
                 return
-            else:
-                physaddr = logical2physical(addr)
-                buf = writePhysicalMemory(
-                    physaddr, substr(buf, 0, distance_to_page_boundary)
-                )
-                addr += distance_to_page_boundary
-                offset += distance_to_page_boundary
-                remainder = length - distance_to_page_boundary
+
+            physaddr = logical2physical(addr)
+            buf = buf[:distance_to_page_boundary]
+            self.writePhysicalMemory(physaddr, buf)
+
+            addr += distance_to_page_boundary
+            offset += distance_to_page_boundary
+            remainder = length - distance_to_page_boundary
 
             while remainder > 0:
                 if remainder < 0x1000:
                     physaddr = logical2physical(addr)
-                    writePhysicalMemory(physaddr, substr(buf, offset, remainder))
+                    self.writePhysicalMemory(physaddr, substr(buf, offset, remainder))
                     remainder = 0
                 else:
                     physaddr = logical2physical(addr)
-                    writePhysicalMemory(physaddr, substr(buf, offset, 0x1000))
+                    self.writePhysicalMemory(physaddr, substr(buf, offset, 0x1000))
                     addr += 0x1000
                     offset += 0x1000
                     remainder -= 0x1000
-            return
 
     # FIXME: Indentation is horrible
-    def readVirtualMemory(addr, length):
+    def readVirtualMemory(self, addr, length):
         # FIXME: return unless addr && length
         chunksize = 0x800  # max to request in one packet
         out = bytearray()
-        buf = bytearray()
-        if pcontext["pid"] == 0:
+        if self.pcontext["pid"] == 0:
             while length > 0:
                 if length < chunksize:
-                    sendDbgKdReadVirtualMemory(addr, length)
-                    buf = waitStateManipulate(DbgKdReadVirtualMemoryApi)
+                    self.sendDbgKdReadVirtualMemory(addr, length)
+                    buf = self.waitStateManipulate(DbgKdReadVirtualMemoryApi)
                     if len(buf) > 56:
                         out += substr(buf, 56)
                         length = 0
                 else:
-                    sendDbgKdReadVirtualMemory(addr, chunksize)
-                    buf = waitStateManipulate(DbgKdReadVirtualMemoryApi)
+                    self.sendDbgKdReadVirtualMemory(addr, chunksize)
+                    buf = self.waitStateManipulate(DbgKdReadVirtualMemoryApi)
                     if len(buf) > 56:
                         out += substr(buf, 56)
                     length -= chunksize
                     addr += chunksize
             return out
-        else:
-            distance_to_page_boundary = 0x1000 - (addr & 0xFFF)
-            if distance_to_page_boundary > length:
+
+        distance_to_page_boundary = 0x1000 - (addr & 0xFFF)
+        if distance_to_page_boundary > length:
+            physaddr = logical2physical(addr)
+            return self.readPhysicalMemory(physaddr, length)
+
+        physaddr = logical2physical(addr)
+        buf = self.readPhysicalMemory(physaddr, distance_to_page_boundary)
+        addr += distance_to_page_boundary
+        remainder = length - distance_to_page_boundary
+        while remainder > 0:
+            if remainder < 0x1000:
                 physaddr = logical2physical(addr)
-                return readPhysicalMemory(physaddr, length)
+                buf += self.readPhysicalMemory(physaddr, remainder)
+                remainder = 0
             else:
                 physaddr = logical2physical(addr)
-                buf = readPhysicalMemory(physaddr, distance_to_page_boundary)
-                addr += distance_to_page_boundary
-                remainder = length - distance_to_page_boundary
-                while remainder > 0:
-                    if remainder < 0x1000:
-                        physaddr = logical2physical(addr)
-                        buf += readPhysicalMemory(physaddr, remainder)
-                        remainder = 0
-                    else:
-                        physaddr = logical2physical(addr)
-                        buf += readPhysicalMemory(physaddr, 0x1000)
-                        addr += 0x1000
-                        remainder -= 0x1000
-            return buf
+                buf += self.readPhysicalMemory(physaddr, 0x1000)
+                addr += 0x1000
+                remainder -= 0x1000
+        return buf
 
-    def sendDbgKdReboot():
+    def sendDbgKdReboot(self):
         print("Sending DbgKdRebootApi packet")
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", 0x313B)
-        sendManipulateStatePacket(d)
+        self.sendManipulateStatePacket(d)
 
-    def waitStateManipulate(wanted):
-        if running:
-            return
+    def waitStateManipulate(self, wanted):
+        if self.running:
+            return None
 
-        ptype = bytearray([])
-        buf = bytearray([])
         try:
             while 1:
-                (ptype, buf) = handlePacket(1)
+                (ptype, buf) = self.handlePacket(1)
                 if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
                     api = unpack("I", substr(buf, 0, 4))
                     if api == wanted:
@@ -882,24 +927,24 @@ class DebugContext:
             print("Timeout waiting for %04x packet reply" % wanted)
         return buf
 
-    def getPspCidTable():
+    def getPspCidTable(self):
         pspcidtable = 0
-        save = pcontext
-        pcontext = kernelcontext  # this procedure is kernel context only
-        sendDbgKdGetVersion()
-        buf = waitStateManipulate(DbgKdGetVersionApi)
+        save = self.pcontext
+        self.pcontext = self.kernelcontext  # this procedure is kernel context only
+        self.sendDbgKdGetVersion()
+        buf = self.waitStateManipulate(DbgKdGetVersionApi)
         pddata = unpack("I", substr(buf, 48, 4))
         if pddata:
             # print("Pointer to debugger data struct is at %08x\n", pddata
-            ddata = readDword(pddata)
+            ddata = self.readDword(pddata)
             if ddata != "failed":
                 # print("debugger data struct is at %08x\n", ddata
-                pspcidtable = readDword(ddata + 88)
+                pspcidtable = self.readDword(ddata + 88)
                 if pspcidtable != "failed":
                     # print("PspCidTable is %08x\n", $pspcidtable
-                    pcontext = save
+                    self.pcontext = save
                     return pspcidtable
-        pcontext = save
+        self.pcontext = save
         return 0
 
 
