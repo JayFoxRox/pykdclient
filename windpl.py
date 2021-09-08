@@ -56,6 +56,7 @@ from windpl_extra import logical2physical
 
 PACKET_LEADER = 0x30303030
 CONTROL_PACKET_LEADER = 0x69696969
+PACKET_TRAILER = 0xAA
 
 PACKET_TYPE_UNUSED = 0
 PACKET_TYPE_KD_STATE_CHANGE32 = 1
@@ -323,7 +324,7 @@ class DebugContext:
                 logging.debug("Reading trailer...")
                 trail = self.client.read(1)
                 logging.debug("Trailer: %s", hexformat(trail))
-                if trail[0] == 0xAA:
+                if trail[0] == PACKET_TRAILER:
                     # logging.debug("sending Ack")
                     self._sendAck()
         else:
@@ -617,13 +618,13 @@ class DebugContext:
         )
 
         logging.debug(
-            "Sending manipulate state: header:\n%s\nBody:\n%s",
+            "Sending manipulate state:\nHeader:\n%s\nBody:\n%s",
             hexformat(header),
             hexformat(d),
         )
         self.client.write(header)
         self.client.write(d)
-        self.client.write(bytes([0xAA]))
+        self.client.write(bytes([PACKET_TRAILER]))
 
     def _sendDbgKdContinue2(self):
 
