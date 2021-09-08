@@ -55,6 +55,7 @@ import sys
 import struct
 from struct import pack
 
+from debug_connection import DebugConnection
 from windpl_extra import logical2physical
 
 PACKET_LEADER = 0x30303030
@@ -69,6 +70,18 @@ PACKET_TYPE_KD_RESEND = 5
 PACKET_TYPE_KD_RESET = 6
 PACKET_TYPE_KD_STATE_CHANGE64 = 7
 PACKET_TYPE_MAX = 8
+
+PACKET_TYPE_TABLE = {
+    PACKET_TYPE_UNUSED: "PACKET_TYPE_UNUSED",
+    PACKET_TYPE_KD_STATE_CHANGE32: "PACKET_TYPE_KD_STATE_CHANGE32",
+    PACKET_TYPE_KD_STATE_MANIPULATE: "PACKET_TYPE_KD_STATE_MANIPULATE",
+    PACKET_TYPE_KD_DEBUG_IO: "PACKET_TYPE_KD_DEBUG_IO",
+    PACKET_TYPE_KD_ACKNOWLEDGE: "PACKET_TYPE_KD_ACKNOWLEDGE",
+    PACKET_TYPE_KD_RESEND: "PACKET_TYPE_KD_RESEND",
+    PACKET_TYPE_KD_RESET: "PACKET_TYPE_KD_RESET",
+    PACKET_TYPE_KD_STATE_CHANGE64: "PACKET_TYPE_KD_STATE_CHANGE64",
+    PACKET_TYPE_MAX: "PACKET_TYPE_MAX"
+}
 
 # PACKET_TYPE_KD_DEBUG_IO apis
 # DBGKD_DEBUG_IO
@@ -185,71 +198,11 @@ def hexasc(buf):
     return out
 
 
-# FIXME: Verify behaviour
-def cksum(buf):
+def generate_checksum(buf):
     v = 0
     for b in buf:
         v += b
     return v
-
-
-class DebugConnection:
-    """Models a connection to the target device (e.g. FIFO, socket)."""
-
-    def __init__(self, endpoint):
-        self.endpoint = endpoint
-        self._connection = None
-
-    def connect(self):
-        # FIXME: Add support for TCP sockets too
-        # self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        # self.client.connect(endpoint)
-        flags = os.O_RDWR
-        if os.name == 'nt':
-            flags |= os.O_BINARY
-
-        self._connection = os.open(self.endpoint, flags)
-
-    def disconnect(self):
-        pass
-
-    def recv(self, max_bytes):
-        """Receives up to `max_bytes` bytes from the connection."""
-        return os.read(self._connection, max_bytes)
-
-    def send(self, buf):
-        return os.write(self._connection, buf)
-
-    def read(self, wanted):
-        """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
-        total = 0
-        outbuf = bytearray([])
-        while total < wanted:
-            # if False:
-            #     if serial:
-            #         (count, buf) = serial.read(1)
-            #     else:
-            #         # FH.blocking(1)
-            #         count = client.sysread(buf, 1)
-            #         if count == 0:
-            #             die("eof")
-            #             # print("client.read count %x\n", ord(buf)
-            #         # FH.blocking(0)
-            buf = self.recv(wanted - total)
-
-            count = len(buf)
-            if count:
-                total += count
-                outbuf += buf
-
-        return outbuf
-
-    def write(self, buffer):
-        """Writes `buffer` to the connection, blocking as necessary."""
-
-        while len(buffer):
-            written = self.send(buffer)
-            buffer = buffer[written:]
 
 
 class DebugContext:
@@ -304,10 +257,13 @@ class DebugContext:
         self.client.connect()
 
     def run(self):
+        print("Waiting for target device...")
         self.sendReset()
+        packets = 0
         while True:
             self.handlePacket()
-            print("")
+            print(f"{packets}")
+            packets += 1
 
         # FIXME: windpl_loop.py
 
@@ -335,42 +291,52 @@ class DebugContext:
         return ptype, buf
 
     def getPacket(self):
-        ptype = None
+        packet_type = None
         payload = bytearray([])
         buf = self.client.read(4)
-        plh = unpack("I", buf)
-        if plh in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            print("Got packet leader: %08x" % plh)
+        packet_signature = unpack("I", buf)
+        if packet_signature in (PACKET_LEADER, CONTROL_PACKET_LEADER):
+            print("Got packet leader: %08x" % packet_signature)
 
             buf = self.client.read(2)
-            ptype = unpack("H", buf)
-            print("Packet type: " + str(ptype) + "")
+            packet_type = unpack("H", buf)
+            packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
+            print(f"Packet type: {packet_type} ({packet_type_name})")
+            if packet_type_name == "<unknown>":
+                print("!! Unexpected packet type %04x" % packet_type)
 
             buf = self.client.read(2)
-            bc = unpack("H", buf)
-            print("Byte count: " + str(bc) + "")
+            data_size = unpack("H", buf)
+            print(f"Byte count: {data_size}")
 
             buf = self.client.read(4)
-            pid = unpack("I", buf)
-            self.nextpid = pid
-            print("Packet ID: %08x" % pid)
+            packet_id = unpack("I", buf)
+            self.nextpid = packet_id
+            print("Packet ID: %08x" % packet_id)
 
             buf = self.client.read(4)
-            ck = unpack("I", buf)
-            print("Checksum: %08x" % ck)
+            expected_checksum = unpack("I", buf)
+            print("Checksum: %08x" % expected_checksum)
 
-            if bc:
-                payload = self.client.read(bc)
+            if data_size:
+                payload = self.client.read(data_size)
+
+            payload_checksum = generate_checksum(payload)
+            if payload_checksum != expected_checksum:
+                print(f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}")
+                sys.exit(1)
 
             # send ack if it's a non-control packet
-            if plh == PACKET_LEADER:
+            if packet_signature == PACKET_LEADER:
                 # packet trailer
                 trail = self.client.read(1)
                 print(hexformat(trail))
                 if trail[0] == 0xAA:
-                    # print("sending Ack\n";#)
+                    print("sending Ack")
                     self.sendAck()
-        return ptype, payload
+        else:
+            print("Discarding non-KD packet bytes: %08x" % packet_signature)
+        return packet_type, payload
 
     def handleDebugIO(self, buf):  # pylint: disable = no-self-use
         apiNumber = unpack("I", substr(buf, 0, 4))
@@ -477,13 +443,11 @@ class DebugContext:
         self.writeDev(ack)
 
     def sendReset(self):
-        rst = "\x69\x69\x69\x69\x06\x00\x00\x00\x00\x00\x80\x80\x00\x00\x00\x00".encode(
-            "utf-8"
-        )
+        reset_packet = pack("IHHII", CONTROL_PACKET_LEADER, PACKET_TYPE_KD_RESET, 0, 0x00008080, 0)
 
         # print("Sending reset packet\n"
         # print(hexformat(rst)
-        self.writeDev(rst)
+        self.writeDev(reset_packet)
 
     def getContext(self):
         context = {}
@@ -649,7 +613,7 @@ class DebugContext:
         )  # packet type PACKET_TYPE_KD_STATE_MANIPULATE
         header += pack("H", len(d))  # sizeof data
         header += pack("I", self.nextpid)  # packet id
-        header += pack("I", cksum(d))  # checksum of data
+        header += pack("I", generate_checksum(d))  # checksum of data
         return header
 
     def sendManipulateStatePacket(self, d):
