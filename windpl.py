@@ -45,6 +45,8 @@
 
 import argparse
 import logging
+import os
+import pathlib
 import sys
 import struct
 from struct import pack  # pylint: disable = no-name-in-module
@@ -917,9 +919,28 @@ class DebugContext:
         return 0
 
 
+def _create_fifos(named_pipe):
+
+    def create(fifo_path):
+        path = pathlib.Path(fifo_path)
+        if not path.exists():
+            logging.debug("Creating fifo at '%s'", fifo_path)
+            os.mkfifo(fifo_path, 0o644)
+            return
+
+        if not path.is_fifo():
+            raise Exception(f"'{path.name}' already exists but is not a fifo.")
+
+    create(f"{named_pipe}.in")
+    create(f"{named_pipe}.out")
+
+
 def main(args):
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level)
+
+    if args.create_fifo:
+        _create_fifos(args.named_pipe)
 
     context = DebugContext()
     context.connect(args.named_pipe)
@@ -937,6 +958,13 @@ if __name__ == "__main__":
         parser.add_argument(
             "named_pipe",
             help="The path to the named pipe used by xemu",
+        )
+
+        parser.add_argument(
+            "-c",
+            "--create-fifo",
+            help="Creates the named pipes if they do not already exist.",
+            action="store_true"
         )
 
         parser.add_argument(
