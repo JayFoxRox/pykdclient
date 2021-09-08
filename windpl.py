@@ -50,6 +50,7 @@ import pathlib
 import sys
 import struct
 from struct import pack  # pylint: disable = no-name-in-module
+import time
 
 from debug_connection import DebugConnection
 from windpl_extra import logical2physical
@@ -125,6 +126,23 @@ DbgKdSearchMemoryApi = 0x00003156
 DbgKdGetBusDataApi = 0x00003157
 DbgKdSetBusDataApi = 0x00003158
 DbgKdCheckLowMemoryApi = 0x00003159
+
+HRESULT_STATUS_SUCCESS = 0x00000000
+HRESULT_STATUS_UNSUCCESSFUL = 0xC0000001
+HRESULT_DBG_EXCEPTION_HANDLED = 0x00010001
+HRESULT_DBG_CONTINUE = 0x00010002
+HRESULT_DBG_REPLY_LATER = 0x40010001
+HRESULT_DBG_UNABLE_TO_PROVIDE_HANDLE = 0x40010002
+HRESULT_DBG_TERMINATE_THREAD = 0x40010003
+HRESULT_DBG_TERMINATE_PROCESS = 0x40010004
+HRESULT_DBG_CONTROL_C = 0x40010005
+HRESULT_DBG_PRINTEXCEPTION_C = 0x40010006
+HRESULT_DBG_RIPEXCEPTION = 0x40010007
+HRESULT_DBG_CONTROL_BREAK = 0x40010008
+HRESULT_DBG_COMMAND_EXCEPTION = 0x40010009
+HRESULT_DBG_EXCEPTION_NOT_HANDLED = 0x80010001
+HRESULT_DBG_NO_STATE_CHANGE = 0xC0010001
+HRESULT_DBG_APP_NOT_IDLE = 0xC0010002
 
 
 def substr(buf, start, length=None):
@@ -206,6 +224,7 @@ class DebugContext:
     """Models a KernelDebug session."""
 
     def __init__(self) -> None:
+        self.start_time = time.perf_counter()
         self.timeout = 10  # max time to wait on packet
         self.running = True
 
@@ -259,16 +278,17 @@ class DebugContext:
         packets = 0
         while True:
             self._handlePacket()
-            logging.debug("Processed %d packets", packets)
+            logging.debug("Processed %d packets\n", packets)
             packets += 1
 
         # FIXME: windpl_loop.py
 
+    @property
+    def elapsed_time(self):
+        return time.perf_counter() - self.start_time
+
     def _handlePacket(self):
         ptype, buf = self._getPacket()
-
-        if len(buf) == 0:
-            return None
 
         if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
             self._handleStateManipulate(buf)
@@ -276,7 +296,13 @@ class DebugContext:
             self._handleDebugIO(buf)
         elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
             self._handleStateChange(buf)
-        else:
+        elif ptype == PACKET_TYPE_KD_RESET:
+            # TODO: check to see if this reset is in response to a reset sent by the debugger script.
+            # If not, dump the read buffer and start over.
+            pass
+        elif ptype == PACKET_TYPE_KD_RESEND:
+            logging.warning("!! Ignoring resend request")
+        elif len(buf):
             logging.debug("Ignoring packet")
 
         return ptype, buf
@@ -287,27 +313,33 @@ class DebugContext:
         buf = self.client.read(4)
         packet_signature = unpack("I", buf)
         if packet_signature in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            logging.debug("Got packet leader: %08x", packet_signature)
+            logging.debug(
+                "[%d] Got packet leader: %08x (%s)",
+                int(self.elapsed_time * 1000),
+                packet_signature,
+                "Packet" if packet_signature == PACKET_LEADER else "ControlPacket",
+            )
 
             buf = self.client.read(2)
             packet_type = unpack("H", buf)
             packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
-            logging.debug("Packet type: %d (%s)", packet_type, packet_type_name)
+            logging.debug("> Packet type: %d (%s)", packet_type, packet_type_name)
             if packet_type_name == "<unknown>":
                 logging.critical("!! Unexpected packet type %04x", packet_type)
 
             buf = self.client.read(2)
             data_size = unpack("H", buf)
-            logging.debug("Byte count: %d", data_size)
 
             buf = self.client.read(4)
             packet_id = unpack("I", buf)
             self.nextpid = packet_id
-            logging.debug("Packet ID: %08x", packet_id)
 
             buf = self.client.read(4)
             expected_checksum = unpack("I", buf)
-            logging.debug("Checksum: %08x", expected_checksum)
+
+            logging.debug("> Packet ID: %08x", packet_id)
+            logging.debug("> Data size: %d", data_size)
+            logging.debug("> Checksum: %08x", expected_checksum)
 
             if data_size:
                 payload = self.client.read(data_size)
@@ -321,12 +353,14 @@ class DebugContext:
             # send ack if it's a non-control packet
             if packet_signature == PACKET_LEADER:
                 # packet trailer
-                logging.debug("Reading trailer...")
+                # logging.debug("Reading trailer...")
                 trail = self.client.read(1)
-                logging.debug("Trailer: %s", hexformat(trail))
+                # logging.debug("Trailer: %x", trail[0])
                 if trail[0] == PACKET_TRAILER:
                     # logging.debug("sending Ack")
                     self._sendAck()
+                else:
+                    raise Exception("Invalid packet trailer 0x%x" % trail[0])
         else:
             logging.warning("Discarding non-KD packet bytes: %08x", packet_signature)
         return packet_type, payload
@@ -335,6 +369,8 @@ class DebugContext:
         apiNumber = unpack("I", substr(buf, 0, 4))
         if apiNumber == DbgKdPrintStringApi:
             print("DbgPrint: " + substr(buf, 0x10).decode("utf-8"))
+        else:
+            logging.debug("Ignoring debug IO packet with API number %d", apiNumber)
 
     def _handleStateChange(self, buf):
         newState = unpack("I", substr(buf, 0, 4))
@@ -391,7 +427,7 @@ class DebugContext:
             # DBGKD_LOAD_SYMBOLS64
 
             filename = buf[0x3B8:-1]
-            filename = filename.decode("utf-8").strip()
+            filename = filename.decode("utf-8")
             logging.debug("Load Symbols for '%s'", filename)
 
             # nothing to do...
@@ -436,7 +472,7 @@ class DebugContext:
             self.nextpid,
             0,
         )
-        logging.debug("Ack: %s", hexformat(ack_packet))
+        # logging.debug("Ack: %s", hexformat(ack_packet))
         self.client.write(ack_packet)
 
     def _sendReset(self):
@@ -444,7 +480,7 @@ class DebugContext:
             "IHHII", CONTROL_PACKET_LEADER, PACKET_TYPE_KD_RESET, 0, 0x00008080, 0
         )
 
-        # print("Sending reset packet\n"
+        logging.debug("Sending reset packet\n\n")
         # print(hexformat(rst)
         self.client.write(reset_packet)
 
@@ -618,7 +654,7 @@ class DebugContext:
         )
 
         logging.debug(
-            "Sending manipulate state:\nHeader:\n%s\nBody:\n%s",
+            "< manipulate state:\nHeader:\n%s\nBody:\n%s",
             hexformat(header),
             hexformat(d),
         )
@@ -627,14 +663,27 @@ class DebugContext:
         self.client.write(bytes([PACKET_TRAILER]))
 
     def _sendDbgKdContinue2(self):
-
-        logging.debug("Sending DbgKdContinue2Api packet")
+        logging.debug("< Sending DbgKdContinueApi2 packet")
         d = bytearray([0] * 56)
-        d = patch_substr(d, 0, 4, "I", DbgKdContinueApi2)
-        d = patch_substr(d, 8, 4, "I", 0x00010001)
-        d = patch_substr(d, 16, 4, "I", 0x00010001)
-        d = patch_substr(d, 24, 4, "I", 0x400)  # TraceFlag
-        d = patch_substr(d, 28, 4, "I", 0x01)  # Dr7
+
+        # Manipulate state packet
+        d = patch_substr(d, 0, 4, "I", DbgKdContinueApi2)  # API Number
+        # d = patch_substr(d, 4, 2, "H", 0x0001)  # Processor level
+        # d = patch_substr(d, 6, 2, "H", 0x0001)  # Processor
+        d = patch_substr(d, 8, 4, "I", HRESULT_STATUS_SUCCESS)  # Return status
+
+        # Continue2 subpacket
+        d = patch_substr(d, 12, 4, "I", HRESULT_STATUS_SUCCESS)  # ContinueStatus
+        d = patch_substr(d, 16, 4, "I", 0x00000000)  # TraceFlag
+        d = patch_substr(d, 20, 4, "I", 0x00000000)  # DR7
+        d = patch_substr(d, 24, 4, "I", 0x00000001)  # CurrentSymbolStart
+        d = patch_substr(d, 28, 4, "I", 0x00000001)  # CurrentSymbolEnd
+
+        # substr( $d, 0,  4 ) = pack( "I", $DbgKdContinueApi2 );
+        # substr( $d, 8,  4 ) = pack( "I", 0x00010001 );
+        # substr( $d, 16, 4 ) = pack( "I", 0x00010001 );
+        # substr( $d, 24, 4 ) = pack( "I", 0x400 );        # TraceFlag
+        # substr( $d, 28, 4 ) = pack( "I", 0x01 );         # Dr7
         self._sendManipulateStatePacket(d)
 
     def _sendDbgKdGetVersion(self):

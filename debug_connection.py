@@ -55,7 +55,11 @@ class DebugConnection:
 
     def recv(self, max_bytes):
         """Receives up to `max_bytes` bytes from the connection."""
-        return os.read(self._connection_read, max_bytes)
+        bytes_read = os.read(self._connection_read, max_bytes)
+        if len(bytes_read) == 0:
+            print("Failed to read from connection")
+
+        return bytes_read
 
     def send(self, buf):
         return os.write(self._connection_write, buf)
