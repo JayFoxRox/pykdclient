@@ -41,19 +41,13 @@
 # WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
-# pylint: disable = invalid-name, missing-function-docstring, fixme
-
-# use IO::Select
-# use IO::Socket
-# use File::stat
-# use Fcntl ':mode'
-# use strict
+# pylint: disable = invalid-name, missing-function-docstring, too-many-instance-attributes, fixme
 
 import argparse
-import os
+import logging
 import sys
 import struct
-from struct import pack
+from struct import pack  # pylint: disable = no-name-in-module
 
 from debug_connection import DebugConnection
 from windpl_extra import logical2physical
@@ -80,7 +74,7 @@ PACKET_TYPE_TABLE = {
     PACKET_TYPE_KD_RESEND: "PACKET_TYPE_KD_RESEND",
     PACKET_TYPE_KD_RESET: "PACKET_TYPE_KD_RESET",
     PACKET_TYPE_KD_STATE_CHANGE64: "PACKET_TYPE_KD_STATE_CHANGE64",
-    PACKET_TYPE_MAX: "PACKET_TYPE_MAX"
+    PACKET_TYPE_MAX: "PACKET_TYPE_MAX",
 }
 
 # PACKET_TYPE_KD_DEBUG_IO apis
@@ -140,11 +134,11 @@ def patch_substr(buf, start, length, fmt, data=None):
     if data is None:
         return buf[0:start] + fmt + buf[start + length :]
 
-    return buf[0:start] + struct.pack(fmt, data) + buf[start + length :]
+    return buf[0:start] + pack(fmt, data) + buf[start + length :]
 
 
 def unpack(fmt, data):
-    return struct.unpack(fmt, data)[0]
+    return struct.unpack(fmt, data)[0]  # pylint: disable = no-member
 
 
 def hexformat(buf):
@@ -251,23 +245,23 @@ class DebugContext:
         #     else:
         #         die("dev not a character device or a socket")
 
-        print(f"Connecting to '{endpoint}'")
+        logging.info("Connecting to '%s'", endpoint)
 
         self.client = DebugConnection(endpoint)
         self.client.connect()
 
     def run(self):
-        print("Waiting for target device...")
-        self.sendReset()
+        logging.info("Waiting for target device...")
+        self._sendReset()
         packets = 0
         while True:
-            self.handlePacket()
-            print(f"{packets}")
+            self._handlePacket()
+            logging.debug("Processed %d packets", packets)
             packets += 1
 
         # FIXME: windpl_loop.py
 
-    def writeDev(self, data):
+    def _writeDev(self, data):
         # if False:
         #     if serial:
         #         serial.write(data)
@@ -275,77 +269,78 @@ class DebugContext:
         #         self.client.syswrite(data)
         self.client.write(data)
 
-    def handlePacket(self):
-        ptype, buf = self.getPacket()
+    def _handlePacket(self):
+        ptype, buf = self._getPacket()
 
         if len(buf) == 0:
             return None
 
         if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
-            self.handleStateManipulate(buf)
+            self._handleStateManipulate(buf)
         elif ptype == PACKET_TYPE_KD_DEBUG_IO:
-            self.handleDebugIO(buf)
+            self._handleDebugIO(buf)
         elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
-            self.handleStateChange(buf)
+            self._handleStateChange(buf)
 
         return ptype, buf
 
-    def getPacket(self):
+    def _getPacket(self):
         packet_type = None
         payload = bytearray([])
         buf = self.client.read(4)
         packet_signature = unpack("I", buf)
         if packet_signature in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            print("Got packet leader: %08x" % packet_signature)
+            logging.debug("Got packet leader: %08x", packet_signature)
 
             buf = self.client.read(2)
             packet_type = unpack("H", buf)
             packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
-            print(f"Packet type: {packet_type} ({packet_type_name})")
+            logging.debug("Packet type: %d (%s)", packet_type, packet_type_name)
             if packet_type_name == "<unknown>":
-                print("!! Unexpected packet type %04x" % packet_type)
+                logging.critical("!! Unexpected packet type %04x", packet_type)
 
             buf = self.client.read(2)
             data_size = unpack("H", buf)
-            print(f"Byte count: {data_size}")
+            logging.debug("Byte count: %d", data_size)
 
             buf = self.client.read(4)
             packet_id = unpack("I", buf)
             self.nextpid = packet_id
-            print("Packet ID: %08x" % packet_id)
+            logging.debug("Packet ID: %08x", packet_id)
 
             buf = self.client.read(4)
             expected_checksum = unpack("I", buf)
-            print("Checksum: %08x" % expected_checksum)
+            logging.debug("Checksum: %08x", expected_checksum)
 
             if data_size:
                 payload = self.client.read(data_size)
 
             payload_checksum = generate_checksum(payload)
             if payload_checksum != expected_checksum:
-                print(f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}")
-                sys.exit(1)
+                raise Exception(
+                    f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}"
+                )
 
             # send ack if it's a non-control packet
             if packet_signature == PACKET_LEADER:
                 # packet trailer
                 trail = self.client.read(1)
-                print(hexformat(trail))
+                logging.debug("Trailer: %s", hexformat(trail))
                 if trail[0] == 0xAA:
-                    print("sending Ack")
-                    self.sendAck()
+                    # logging.debug("sending Ack")
+                    self._sendAck()
         else:
-            print("Discarding non-KD packet bytes: %08x" % packet_signature)
+            logging.warning("Discarding non-KD packet bytes: %08x", packet_signature)
         return packet_type, payload
 
-    def handleDebugIO(self, buf):  # pylint: disable = no-self-use
+    def _handleDebugIO(self, buf):  # pylint: disable = no-self-use
         apiNumber = unpack("I", substr(buf, 0, 4))
         if apiNumber == DbgKdPrintStringApi:
-            print("DBG PRINT STRING: " + substr(buf, 0x10).decode("utf-8"))
+            print("DbgPrint: " + substr(buf, 0x10).decode("utf-8"))
 
-    def handleStateChange(self, buf):
+    def _handleStateChange(self, buf):
         newState = unpack("I", substr(buf, 0, 4))
-        print("State Change: %08x" % newState)
+        logging.debug("State Change: %08x", newState)
 
         if newState == DbgKdExceptionStateChange:
             exceptions = {
@@ -378,15 +373,16 @@ class DebugContext:
             parameters = unpack("I", substr(ex, 24, 4))
 
             if code in exceptions:
-                print("*** %s ", exceptions[code])
+                logging.warning("*** %s ", exceptions[code])
             else:
-                print("*** Exception %08x " % code)
-            print("at %08x\n", address)
+                logging.warning("*** Exception %08x ", code)
 
-            print("Exception flags = %08x" % flags)
-            print("Exception record = %08x" % record)
-            print("Exception address = %08x" % address)
-            print("Number parameters = %08x" % parameters)
+            logging.warning("at %08x\n", address)
+
+            logging.warning("Exception flags = %08x", flags)
+            logging.warning("Exception record = %08x", record)
+            logging.warning("Exception address = %08x", address)
+            logging.warning("Number parameters = %08x", parameters)
 
             self.running = False
 
@@ -398,61 +394,63 @@ class DebugContext:
 
             filename = substr(buf, 0x3B8)
             filename = filename.decode("utf-8").strip()
-            print("Load Symbols for " + filename + "")
+            logging.debug("Load Symbols for '%s'", filename)
 
             # nothing to do...
 
-            self.sendDbgKdContinue2()
+            self._sendDbgKdContinue2()
 
-    def handleStateManipulate(self, buf):
+    def _handleStateManipulate(self, buf):
 
         apiNumber = unpack("I", substr(buf, 0, 4))
-        print("State Manipulate: %08x" % apiNumber)
+        logging.debug("State Manipulate: %08x", apiNumber)
 
         if apiNumber == DbgKdWriteBreakPointApi:
             bp = "%08x" % unpack("I", substr(buf, 16, 4))
             handle = unpack("I", substr(buf, 20, 4))
-            print("Breakpoint " + handle + " set at " + bp + "")
+            logging.debug("Breakpoint %d set at %s", handle, bp)
             self.breakpoints[bp] = handle
         elif apiNumber == DbgKdRestoreBreakPointApi:
             handle = unpack("I", substr(buf, 16, 4))
-            print("Breakpoint " + handle + " cleared")
+            logging.debug("Breakpoint %d cleared", handle)
         elif apiNumber == DbgKdGetVersionApi:
             version = substr(buf, 16)
-            print("VERS: " + hexformat(version))
+            logging.debug("VERS: %s", hexformat(version))
         elif apiNumber == DbgKdReadVirtualMemoryApi:
             vmem = substr(buf, 56)
-            print("VMEM:\n" + hexasc(vmem))
+            logging.debug("VMEM:\n%s", hexasc(vmem))
         elif apiNumber == DbgKdReadPhysicalMemoryApi:
             pmem = substr(buf, 56)
-            print("PMEM:\n" + hexasc(pmem))
+            logging.debug("PMEM:\n%s", hexasc(pmem))
         elif apiNumber == DbgKdReadControlSpaceApi:
             controlspace = substr(buf, 56)
-            print("CNTL: " + hexformat(controlspace))
+            logging.debug("CNTL: %s", hexformat(controlspace))
         else:
-            print("UNKN: " + hexasc(buf))
+            logging.debug("UNKN: %s", hexasc(buf))
 
-    def sendAck(self):
+    def _sendAck(self):
         ack = "\x69\x69\x69\x69\x04\x00\x00\x00\x00\x00\x80\x80\x00\x00\x00\x00".encode(
             "utf-8"
         )
-        print(self.nextpid)
+        logging.debug("NextPID: %d", self.nextpid)
         ack = patch_substr(ack, 8, 4, "I", self.nextpid)
 
-        print(hexformat(ack))
-        self.writeDev(ack)
+        logging.debug("Ack: %s", hexformat(ack))
+        self._writeDev(ack)
 
-    def sendReset(self):
-        reset_packet = pack("IHHII", CONTROL_PACKET_LEADER, PACKET_TYPE_KD_RESET, 0, 0x00008080, 0)
+    def _sendReset(self):
+        reset_packet = pack(
+            "IHHII", CONTROL_PACKET_LEADER, PACKET_TYPE_KD_RESET, 0, 0x00008080, 0
+        )
 
         # print("Sending reset packet\n"
         # print(hexformat(rst)
-        self.writeDev(reset_packet)
+        self._writeDev(reset_packet)
 
-    def getContext(self):
+    def _getContext(self):
         context = {}
-        self.sendDbgKdGetContext()
-        buf = self.waitStateManipulate(DbgKdGetContextApi)
+        self._sendDbgKdGetContext()
+        buf = self._waitStateManipulate(DbgKdGetContextApi)
 
         if len(buf) <= 204:
             return None
@@ -495,7 +493,7 @@ class DebugContext:
         context["leftovers"] = ctx[204:]
         return context
 
-    def setContext(self, context):
+    def _setContext(self, context):
         ctx = pack("I", context["ContextFlags"])
         ctx += pack("I", context["DR0"])
         ctx += pack("I", context["DR1"])
@@ -529,14 +527,14 @@ class DebugContext:
         ctx += pack("I", context["ESP"])
         ctx += pack("I", context["SS"])
         ctx += context["leftovers"]
-        self.sendDbgKdSetContext(ctx)
-        self.waitStateManipulate(DbgKdSetContextApi)
+        self._sendDbgKdSetContext(ctx)
+        self._waitStateManipulate(DbgKdSetContextApi)
 
-    def getVersionInfo(self):
-        print("getVersionInfo")
+    def _getVersionInfo(self):
+        logging.info("getVersionInfo")
         # os version, protocol version, kernel base, module list, debugger data
-        self.sendDbgKdGetVersion()
-        buf = self.waitStateManipulate(DbgKdGetVersionApi)
+        self._sendDbgKdGetVersion()
+        buf = self._waitStateManipulate(DbgKdGetVersionApi)
         if len(buf) > 32:
             v = substr(buf, 16)
             osv = "%d.%d" % (unpack("H", substr(v, 4, 2)), unpack("H", substr(v, 6, 2)))
@@ -546,28 +544,30 @@ class DebugContext:
             modlist = unpack("I", substr(v, 24, 4))
             ddata = unpack("I", substr(v, 32, 4))
             if pv < 5:
-                print("Debug protocol version %d not supported" % pv)
+                logging.critical("Debug protocol version %d not supported", pv)
                 sys.exit()
             if machinetype and (machinetype != 0x2D):
-                print("Processor architecture %04x not supported" % machinetype)
+                logging.critical(
+                    "Processor architecture %04x not supported", machinetype
+                )
                 sys.exit()
 
-            print("Windows version = %s" % osv)
-            print("Protocol version = %d" % pv)
-            print("Kernel base = %08x" % kernbase)
-            print("Module list = %08x" % modlist)
-            print("Debugger data = %08x" % ddata)
+            logging.info("Windows version = %s", osv)
+            logging.info("Protocol version = %d", pv)
+            logging.info("Kernel base = %08x", kernbase)
+            logging.info("Module list = %08x", modlist)
+            logging.info("Debugger data = %08x", ddata)
 
             return (osv, pv, kernbase, modlist, ddata)
         return ("0.0", 0, 0, 0, 0)
 
-    def printVersionData(self):
-        v = self.getVersionInfo()
-        print("Windows version = %s" % v[0])
-        print("Protocol version = %d" % v[1])
-        print("Kernel base = %08x" % v[2])
-        print("Module list = %08x" % v[3])
-        print("Debugger data = %08x" % v[4])
+    def _printVersionData(self):
+        v = self._getVersionInfo()
+        logging.info("Windows version = %s", v[0])
+        logging.info("Protocol version = %d", v[1])
+        logging.info("Kernel base = %08x", v[2])
+        logging.info("Module list = %08x", v[3])
+        logging.info("Debugger data = %08x", v[4])
 
     # if False:
     #     def getKernelModules():
@@ -606,7 +606,7 @@ class DebugContext:
     #             buf = None  # FIXME: =~ s/\x00//g;  # ok not really Unicode to Ascii
     #         return buf
 
-    def packetHeader(self, d):
+    def _packetHeader(self, d):
         header = "\x30\x30\x30\x30".encode("utf-8")  # packet leader
         header += "\x02\x00".encode(
             "utf-8"
@@ -616,15 +616,15 @@ class DebugContext:
         header += pack("I", generate_checksum(d))  # checksum of data
         return header
 
-    def sendManipulateStatePacket(self, d):
-        h = self.packetHeader(d)
+    def _sendManipulateStatePacket(self, d):
+        h = self._packetHeader(d)
 
-        print("SEND: " + hexformat(h) + hexformat(d))
-        self.writeDev(h)
-        self.writeDev(d)
-        self.writeDev(bytes([0xAA]))
+        logging.debug("SEND: " + hexformat(h) + hexformat(d))
+        self._writeDev(h)
+        self._writeDev(d)
+        self._writeDev(bytes([0xAA]))
 
-    def sendDbgKdContinue2(self):
+    def _sendDbgKdContinue2(self):
 
         # print("Sending DbgKdContinue2Api packet\n"
         d = bytearray([0] * 56)
@@ -633,16 +633,16 @@ class DebugContext:
         d = patch_substr(d, 16, 4, "I", 0x00010001)
         d = patch_substr(d, 24, 4, "I", 0x400)  # TraceFlag
         d = patch_substr(d, 28, 4, "I", 0x01)  # Dr7
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdGetVersion(self):
+    def _sendDbgKdGetVersion(self):
 
         # print("Sending DbgKdGetVersionApi packet\n"
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", DbgKdGetVersionApi)
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdWriteBreakPoint(self, bp):
+    def _sendDbgKdWriteBreakPoint(self, bp):
         bp = hex(bp)
 
         # print("Sending DbgKdWriteBreakPointApi packet\n"
@@ -651,31 +651,31 @@ class DebugContext:
         d = patch_substr(d, 16, 4, "I", bp)
         d = patch_substr(d, 20, 4, "I", self.curbp)
         self.curbp += 1
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdRestoreBreakPoint(self, bp):
+    def _sendDbgKdRestoreBreakPoint(self, bp):
         if bp in self.breakpoints:
 
             # print("Sending DbgKdRestoreBreakPointApi packet\n"
             d = bytearray([0] * 56)
             d = patch_substr(d, 0, 4, "I", DbgKdRestoreBreakPointApi)
             d = patch_substr(d, 16, 4, "I", self.breakpoints[bp])
-            self.sendManipulateStatePacket(d)
+            self._sendManipulateStatePacket(d)
             del self.breakpoints[bp]
 
         else:
-            print("Breakpoint not set at bp")
+            logging.warning("Breakpoint not set at bp")
 
-    def sendDbgKdReadControlSpace(self):
+    def _sendDbgKdReadControlSpace(self):
 
         # print("Sending DbgKdReadControlSpaceApi packet\n"
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", 0x3137)
         d = patch_substr(d, 16, 4, "I", 0x02CC)
         d = patch_substr(d, 24, 4, "I", 84)
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdWriteControlSpace(self):
+    def _sendDbgKdWriteControlSpace(self):
 
         # print("Sending DbgKdWriteControlSpaceApi packet\n"
         d = bytearray([0] * 56)
@@ -683,44 +683,51 @@ class DebugContext:
         d = patch_substr(d, 16, 4, "I", 0x02CC)
         d = patch_substr(d, 24, 4, "I", 84)
         d += self.controlspace
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
         self.controlspacesent = True
 
-    def sendDbgKdGetContext(self):
+    def _sendDbgKdGetContext(self):
 
         # print("Sending DbgKdGetContextApi packet\n"
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", DbgKdGetContextApi)
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdSetContext(self, ctx):
+    def _sendDbgKdSetContext(self, ctx):
 
         # print("Sending DbgKdSetContextApi packet\n"
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", DbgKdSetContextApi)
         d = patch_substr(d, 16, 4, ctx[0:4])
         d += ctx
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdReadPhysicalMemory(self, addr, readlen):
+    def _sendDbgKdReadPhysicalMemory(self, addr, readlen):
 
         # print("Sending DbgKdReadPhysicalMemoryApi packet\n"
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", DbgKdReadPhysicalMemoryApi)
         d = patch_substr(d, 16, 4, "I", addr)
         d = patch_substr(d, 24, 4, "I", readlen)
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdReadVirtualMemory(self, vaddr, readlen):
+    def _sendDbgKdWritePhysicalMemory(self, addr, data):
+        writelen = len(data)
+
+        d = pack("III", DbgKdWritePhysicalMemoryApi, addr, writelen)
+        d += data
+        self._sendManipulateStatePacket(d)
+
+    def _sendDbgKdReadVirtualMemory(self, vaddr, readlen):
 
         # print("Sending DbgKdReadVirtualMemoryApi packet\n"
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", DbgKdReadVirtualMemoryApi)
         d = patch_substr(d, 16, 4, "I", vaddr)
         d = patch_substr(d, 24, 4, "I", readlen)
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def sendDbgKdWriteVirtualMemory(self, vaddr, data):
+    def _sendDbgKdWriteVirtualMemory(self, vaddr, data):
         writelen = len(data)
 
         # print("Sending DbgKdWriteVirtualMemoryApi packet\n"
@@ -729,54 +736,54 @@ class DebugContext:
         d = patch_substr(d, 16, 4, "I", vaddr)
         d = patch_substr(d, 24, 4, "I", writelen)
         d += data
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def readDword(self, addr):
+    def _readDword(self, addr):
 
         # print("Reading dword at %08x\n", addr
-        buf = self.readVirtualMemory(addr, 4)
+        buf = self._readVirtualMemory(addr, 4)
         if len(buf) == 4:
             return unpack("I", buf)
         return "failed"
 
-    def readPhysicalMemory(self, addr, length):
+    def _readPhysicalMemory(self, addr, length):
         chunksize = 0x800  # max to request in one packet
         out = bytearray([])
         while length > 0:
 
             if length < chunksize:
-                self.sendDbgKdReadPhysicalMemory(addr, length)
-                buf = self.waitStateManipulate(DbgKdReadPhysicalMemoryApi)
+                self._sendDbgKdReadPhysicalMemory(addr, length)
+                buf = self._waitStateManipulate(DbgKdReadPhysicalMemoryApi)
                 if len(buf) > 56:
                     out += substr(buf, 56)
                     length = 0
             else:
-                self.sendDbgKdReadPhysicalMemory(addr, chunksize)
-                buf = self.waitStateManipulate(DbgKdReadPhysicalMemoryApi)
+                self._sendDbgKdReadPhysicalMemory(addr, chunksize)
+                buf = self._waitStateManipulate(DbgKdReadPhysicalMemoryApi)
                 if len(buf) > 56:
                     out += substr(buf, 56)
                     length -= chunksize
                     addr += chunksize
         return out
 
-    def writePhysicalMemory(self, addr, buf):
+    def _writePhysicalMemory(self, addr, buf):
         length = len(buf)
         chunksize = 0x800  # max to send in one packet
         offset = 0
         # FIXME: Logic sucks here..
         while length > 0:
             if length < chunksize:
-                self.sendDbgKdWritePhysicalMemory(addr, buf)
-                self.waitStateManipulate(0x313E)
+                self._sendDbgKdWritePhysicalMemory(addr, buf)
+                self._waitStateManipulate(0x313E)
                 length = 0
             else:
-                self.sendDbgKdWritePhysicalMemory(addr, substr(buf, offset, chunksize))
-                self.waitStateManipulate(0x313E)
+                self._sendDbgKdWritePhysicalMemory(addr, substr(buf, offset, chunksize))
+                self._waitStateManipulate(0x313E)
                 length -= chunksize
                 offset += chunksize
                 addr += chunksize
 
-    def writeVirtualMemory(self, addr, buf):
+    def _writeVirtualMemory(self, addr, buf):
         length = len(buf)
         # FIXME: return unless addr && length
         chunksize = 0x800  # max to send in one packet
@@ -785,14 +792,14 @@ class DebugContext:
             # FIXME: Logic sucks here..
             while length > 0:
                 if length < chunksize:
-                    self.sendDbgKdWriteVirtualMemory(addr, buf)
-                    self.waitStateManipulate(DbgKdWriteVirtualMemoryApi)
+                    self._sendDbgKdWriteVirtualMemory(addr, buf)
+                    self._waitStateManipulate(DbgKdWriteVirtualMemoryApi)
                     length = 0
                 else:
-                    self.sendDbgKdWriteVirtualMemory(
+                    self._sendDbgKdWriteVirtualMemory(
                         addr, substr(buf, offset, chunksize)
                     )
-                    self.waitStateManipulate(DbgKdWriteVirtualMemoryApi)
+                    self._waitStateManipulate(DbgKdWriteVirtualMemoryApi)
                     length -= chunksize
                     offset += chunksize
                     addr += chunksize
@@ -801,12 +808,12 @@ class DebugContext:
             # FIXME: Logic sucks here..
             if distance_to_page_boundary > length:
                 physaddr = logical2physical(addr)
-                self.writePhysicalMemory(physaddr, buf)
+                self._writePhysicalMemory(physaddr, buf)
                 return
 
             physaddr = logical2physical(addr)
             buf = buf[:distance_to_page_boundary]
-            self.writePhysicalMemory(physaddr, buf)
+            self._writePhysicalMemory(physaddr, buf)
 
             addr += distance_to_page_boundary
             offset += distance_to_page_boundary
@@ -815,31 +822,31 @@ class DebugContext:
             while remainder > 0:
                 if remainder < 0x1000:
                     physaddr = logical2physical(addr)
-                    self.writePhysicalMemory(physaddr, substr(buf, offset, remainder))
+                    self._writePhysicalMemory(physaddr, substr(buf, offset, remainder))
                     remainder = 0
                 else:
                     physaddr = logical2physical(addr)
-                    self.writePhysicalMemory(physaddr, substr(buf, offset, 0x1000))
+                    self._writePhysicalMemory(physaddr, substr(buf, offset, 0x1000))
                     addr += 0x1000
                     offset += 0x1000
                     remainder -= 0x1000
 
     # FIXME: Indentation is horrible
-    def readVirtualMemory(self, addr, length):
+    def _readVirtualMemory(self, addr, length):
         # FIXME: return unless addr && length
         chunksize = 0x800  # max to request in one packet
         out = bytearray()
         if self.pcontext["pid"] == 0:
             while length > 0:
                 if length < chunksize:
-                    self.sendDbgKdReadVirtualMemory(addr, length)
-                    buf = self.waitStateManipulate(DbgKdReadVirtualMemoryApi)
+                    self._sendDbgKdReadVirtualMemory(addr, length)
+                    buf = self._waitStateManipulate(DbgKdReadVirtualMemoryApi)
                     if len(buf) > 56:
                         out += substr(buf, 56)
                         length = 0
                 else:
-                    self.sendDbgKdReadVirtualMemory(addr, chunksize)
-                    buf = self.waitStateManipulate(DbgKdReadVirtualMemoryApi)
+                    self._sendDbgKdReadVirtualMemory(addr, chunksize)
+                    buf = self._waitStateManipulate(DbgKdReadVirtualMemoryApi)
                     if len(buf) > 56:
                         out += substr(buf, 56)
                     length -= chunksize
@@ -849,58 +856,59 @@ class DebugContext:
         distance_to_page_boundary = 0x1000 - (addr & 0xFFF)
         if distance_to_page_boundary > length:
             physaddr = logical2physical(addr)
-            return self.readPhysicalMemory(physaddr, length)
+            return self._readPhysicalMemory(physaddr, length)
 
         physaddr = logical2physical(addr)
-        buf = self.readPhysicalMemory(physaddr, distance_to_page_boundary)
+        buf = self._readPhysicalMemory(physaddr, distance_to_page_boundary)
         addr += distance_to_page_boundary
         remainder = length - distance_to_page_boundary
         while remainder > 0:
             if remainder < 0x1000:
                 physaddr = logical2physical(addr)
-                buf += self.readPhysicalMemory(physaddr, remainder)
+                buf += self._readPhysicalMemory(physaddr, remainder)
                 remainder = 0
             else:
                 physaddr = logical2physical(addr)
-                buf += self.readPhysicalMemory(physaddr, 0x1000)
+                buf += self._readPhysicalMemory(physaddr, 0x1000)
                 addr += 0x1000
                 remainder -= 0x1000
         return buf
 
-    def sendDbgKdReboot(self):
-        print("Sending DbgKdRebootApi packet")
+    def _sendDbgKdReboot(self):
+        logging.info("Sending DbgKdRebootApi packet")
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", 0x313B)
-        self.sendManipulateStatePacket(d)
+        self._sendManipulateStatePacket(d)
 
-    def waitStateManipulate(self, wanted):
+    def _waitStateManipulate(self, wanted):
         if self.running:
             return None
 
-        try:
-            while 1:
-                (ptype, buf) = self.handlePacket(1)
-                if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
-                    api = unpack("I", substr(buf, 0, 4))
-                    if api == wanted:
-                        break
-        except timeout:
-            print("Timeout waiting for %04x packet reply" % wanted)
+        # FIXME: Implement a timeout.
+        # try:
+        while 1:
+            ptype, buf = self._handlePacket()
+            if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
+                api = unpack("I", substr(buf, 0, 4))
+                if api == wanted:
+                    break
+        # except timeout:
+        #     logging.warning("Timeout waiting for %04x packet reply", wanted)
         return buf
 
-    def getPspCidTable(self):
+    def _getPspCidTable(self):
         pspcidtable = 0
         save = self.pcontext
         self.pcontext = self.kernelcontext  # this procedure is kernel context only
-        self.sendDbgKdGetVersion()
-        buf = self.waitStateManipulate(DbgKdGetVersionApi)
+        self._sendDbgKdGetVersion()
+        buf = self._waitStateManipulate(DbgKdGetVersionApi)
         pddata = unpack("I", substr(buf, 48, 4))
         if pddata:
             # print("Pointer to debugger data struct is at %08x\n", pddata
-            ddata = self.readDword(pddata)
+            ddata = self._readDword(pddata)
             if ddata != "failed":
                 # print("debugger data struct is at %08x\n", ddata
-                pspcidtable = self.readDword(ddata + 88)
+                pspcidtable = self._readDword(ddata + 88)
                 if pspcidtable != "failed":
                     # print("PspCidTable is %08x\n", $pspcidtable
                     self.pcontext = save
@@ -910,6 +918,9 @@ class DebugContext:
 
 
 def main(args):
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=log_level)
+
     context = DebugContext()
     context.connect(args.named_pipe)
 
@@ -922,10 +933,19 @@ if __name__ == "__main__":
 
     def _parse_args():
         parser = argparse.ArgumentParser()
+
         parser.add_argument(
             "named_pipe",
             help="The path to the named pipe used by xemu",
         )
+
+        parser.add_argument(
+            "-v",
+            "--verbose",
+            help="Enables verbose logging information",
+            action="store_true",
+        )
+
         return parser.parse_args()
 
     sys.exit(main(_parse_args()))
