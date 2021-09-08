@@ -263,14 +263,6 @@ class DebugContext:
 
         # FIXME: windpl_loop.py
 
-    def _writeDev(self, data):
-        # if False:
-        #     if serial:
-        #         serial.write(data)
-        #     else:
-        #         self.client.syswrite(data)
-        self.client.write(data)
-
     def _handlePacket(self):
         ptype, buf = self._getPacket()
 
@@ -283,6 +275,8 @@ class DebugContext:
             self._handleDebugIO(buf)
         elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
             self._handleStateChange(buf)
+        else:
+            logging.debug("Ignoring packet")
 
         return ptype, buf
 
@@ -326,6 +320,7 @@ class DebugContext:
             # send ack if it's a non-control packet
             if packet_signature == PACKET_LEADER:
                 # packet trailer
+                logging.debug("Reading trailer...")
                 trail = self.client.read(1)
                 logging.debug("Trailer: %s", hexformat(trail))
                 if trail[0] == 0xAA:
@@ -342,7 +337,7 @@ class DebugContext:
 
     def _handleStateChange(self, buf):
         newState = unpack("I", substr(buf, 0, 4))
-        logging.debug("State Change: %08x", newState)
+        logging.debug("State Change: New state: %08x", newState)
 
         if newState == DbgKdExceptionStateChange:
             exceptions = {
@@ -394,7 +389,7 @@ class DebugContext:
         elif newState == DbgKdLoadSymbolsStateChange:
             # DBGKD_LOAD_SYMBOLS64
 
-            filename = substr(buf, 0x3B8)
+            filename = buf[0x3B8:-1]
             filename = filename.decode("utf-8").strip()
             logging.debug("Load Symbols for '%s'", filename)
 
@@ -431,14 +426,17 @@ class DebugContext:
             logging.debug("UNKN: %s", hexasc(buf))
 
     def _sendAck(self):
-        ack = "\x69\x69\x69\x69\x04\x00\x00\x00\x00\x00\x80\x80\x00\x00\x00\x00".encode(
-            "utf-8"
+        logging.debug("Acking with next PID: %08x", self.nextpid)
+        ack_packet = pack(
+            "IHHII",
+            CONTROL_PACKET_LEADER,
+            PACKET_TYPE_KD_ACKNOWLEDGE,
+            0,
+            self.nextpid,
+            0,
         )
-        logging.debug("NextPID: %d", self.nextpid)
-        ack = patch_substr(ack, 8, 4, "I", self.nextpid)
-
-        logging.debug("Ack: %s", hexformat(ack))
-        self._writeDev(ack)
+        logging.debug("Ack: %s", hexformat(ack_packet))
+        self.client.write(ack_packet)
 
     def _sendReset(self):
         reset_packet = pack(
@@ -447,7 +445,7 @@ class DebugContext:
 
         # print("Sending reset packet\n"
         # print(hexformat(rst)
-        self._writeDev(reset_packet)
+        self.client.write(reset_packet)
 
     def _getContext(self):
         context = {}
@@ -608,27 +606,28 @@ class DebugContext:
     #             buf = None  # FIXME: =~ s/\x00//g;  # ok not really Unicode to Ascii
     #         return buf
 
-    def _packetHeader(self, d):
-        header = "\x30\x30\x30\x30".encode("utf-8")  # packet leader
-        header += "\x02\x00".encode(
-            "utf-8"
-        )  # packet type PACKET_TYPE_KD_STATE_MANIPULATE
-        header += pack("H", len(d))  # sizeof data
-        header += pack("I", self.nextpid)  # packet id
-        header += pack("I", generate_checksum(d))  # checksum of data
-        return header
-
     def _sendManipulateStatePacket(self, d):
-        h = self._packetHeader(d)
+        header = pack(
+            "IHHII",
+            PACKET_LEADER,
+            PACKET_TYPE_KD_STATE_MANIPULATE,
+            len(d),
+            self.nextpid,
+            generate_checksum(d),
+        )
 
-        logging.debug("SEND: " + hexformat(h) + hexformat(d))
-        self._writeDev(h)
-        self._writeDev(d)
-        self._writeDev(bytes([0xAA]))
+        logging.debug(
+            "Sending manipulate state: header:\n%s\nBody:\n%s",
+            hexformat(header),
+            hexformat(d),
+        )
+        self.client.write(header)
+        self.client.write(d)
+        self.client.write(bytes([0xAA]))
 
     def _sendDbgKdContinue2(self):
 
-        # print("Sending DbgKdContinue2Api packet\n"
+        logging.debug("Sending DbgKdContinue2Api packet")
         d = bytearray([0] * 56)
         d = patch_substr(d, 0, 4, "I", DbgKdContinueApi2)
         d = patch_substr(d, 8, 4, "I", 0x00010001)
@@ -886,6 +885,7 @@ class DebugContext:
         if self.running:
             return None
 
+        logging.debug("Waiting on STATE_MANIPULATE packet")
         # FIXME: Implement a timeout.
         # try:
         while 1:
@@ -920,7 +920,6 @@ class DebugContext:
 
 
 def _create_fifos(named_pipe):
-
     def create(fifo_path):
         path = pathlib.Path(fifo_path)
         if not path.exists():
@@ -964,7 +963,7 @@ if __name__ == "__main__":
             "-c",
             "--create-fifo",
             help="Creates the named pipes if they do not already exist.",
-            action="store_true"
+            action="store_true",
         )
 
         parser.add_argument(
