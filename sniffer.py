@@ -198,7 +198,7 @@ class _KDPassthroughSniffer:
             self._log("UNKN: %s", hexasc(payload))
 
     def _log_version(self, payload):
-        assert(len(payload) == 40)
+        assert len(payload) == 40
         (
             major_version,
             minor_version,
@@ -388,6 +388,7 @@ def main(args):
         server.serve_forever()
     except KeyboardInterrupt:
         debugger_connection.stop()
+        server.shutdown()
         raise
 
 

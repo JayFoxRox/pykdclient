@@ -1,5 +1,6 @@
 """Abstract connection interface for kernel debugging."""
 
+import logging
 import os
 import pathlib
 import socket
@@ -23,15 +24,22 @@ class DebugConnection:
         else:
             self._connect_fifo(self.endpoint)
 
-    def _connect_socket(self, host_port):
-        self._connection_read = socket.socket()
+    def handle_socket(self, connection):
+        """Utilizes the given socket as the transport layer."""
+        self._connection_read = connection
         self._connection_write = self._connection_read
-        self._connection_read.connect(host_port)
         self._recv = self._recv_socket
         self._send = self._send_socket
 
+    def _connect_socket(self, host_port):
+        logging.info("Connecting to %s:%d", host_port[0], host_port[1])
+        self.handle_socket(socket.socket())
+        self._connection_read.connect(host_port)
+
     def _connect_fifo(self, path):
         """Connects via a pair of .in and .out named pipes."""
+
+        logging.info("Connecting to FIFO at '%s'", path)
 
         def require_fifo_exists(fifo_path):
             path_object = pathlib.Path(fifo_path)
@@ -61,7 +69,6 @@ class DebugConnection:
         self._recv = self._recv_fifo
         self._send = self._send_fifo
 
-
     def disconnect(self):
         pass
 
@@ -86,7 +93,7 @@ class DebugConnection:
 
     def _send_socket(self, buf):
         """Sends some or all of the given buf, returns the number of bytes actually sent."""
-        return self._connection_write(buf)
+        return self._connection_write.send(buf)
 
     def read(self, wanted):
         """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
@@ -109,6 +116,8 @@ class DebugConnection:
             if count:
                 total += count
                 outbuf += buf
+            else:
+                raise ConnectionResetError("Failed to read from connection.")
 
         return outbuf
 
