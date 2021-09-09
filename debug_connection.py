@@ -76,25 +76,6 @@ class DebugConnection:
     def disconnect(self):
         pass
 
-    def _read_packet_leader(self) -> (int, bytearray):
-        """Reads from the connection until a valid packet leader is found.
-
-        Returns (packet_leader, discarded_bytes):
-        - packet_leader: The 4 byte leader that was read
-        - discarded_bytes: An array of bytes that were read and discarded
-                           before the leader was found.
-        """
-        buf = self.read(4)
-        packet_leader = struct.unpack("I", buf)[0]
-
-        discarded_bytes = bytearray([])
-        while packet_leader not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            discarded_bytes.append(buf[0])
-            buf = buf[1:] + self.read(1)
-            packet_leader = struct.unpack("I", buf)[0]
-
-        return packet_leader, discarded_bytes
-
     def read_packet(self) -> (kd_packet.KDPacket, bytearray):
         """Reads a single KD packet from the connection."""
         packet_leader, discarded_bytes = self._read_packet_leader()
@@ -146,6 +127,25 @@ class DebugConnection:
         while len(buffer):
             written = self._send(buffer)
             buffer = buffer[written:]
+
+    def _read_packet_leader(self) -> (int, bytearray):
+        """Reads from the connection until a valid packet leader is found.
+
+        Returns (packet_leader, discarded_bytes):
+        - packet_leader: The 4 byte leader that was read
+        - discarded_bytes: An array of bytes that were read and discarded
+                           before the leader was found.
+        """
+        buf = self.read(4)
+        packet_leader = struct.unpack("I", buf)[0]
+
+        discarded_bytes = bytearray([])
+        while packet_leader not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
+            discarded_bytes.append(buf[0])
+            buf = buf[1:] + self.read(1)
+            packet_leader = struct.unpack("I", buf)[0]
+
+        return packet_leader, discarded_bytes
 
     def _recv_fifo(self, max_bytes):
         """Receives up to `max_bytes` bytes from the connection."""

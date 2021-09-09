@@ -146,21 +146,10 @@ class DebugContext:
         return ptype, buf
 
     def _log_packet(self, packet: kd_packet.KDPacket, read_time: int):
-        logging.debug(
-            "[%d] Got packet leader: %08x (%s)",
-            read_time,
-            packet.packet_leader,
-            packet.packet_group_name,
-        )
-        logging.debug(
-            "> Packet type: %d (%s)", packet.packet_type, packet.packet_type_name
-        )
+        logging.debug("[%d]\n%s", read_time, "\n".join(packet.basic_log_info))
+
         if packet.packet_type_name == "<unknown>":
             logging.critical("!! Unexpected packet type %04x", packet.packet_type)
-        logging.debug("> Packet ID: %08x", packet.packet_id)
-        logging.debug("> Data size: %d", len(packet.payload))
-        logging.debug("> Checksum: %08x", packet.expected_checksum)
-
         if packet.actual_checksum != packet.expected_checksum:
             raise Exception(
                 f"!! Checksum invalid. Expected {packet.expected_checksum} but calculated {packet.actual_checksum}"

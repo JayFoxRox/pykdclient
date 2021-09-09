@@ -69,3 +69,14 @@ class KDPacket:
     @property
     def needs_ack(self) -> bool:
         return self.packet_leader == constants.PACKET_LEADER
+
+    @property
+    def basic_log_info(self) -> [str]:
+        return [
+            "Got packet leader: %08x (%s)"
+            % (self.packet_leader, self.packet_group_name),
+            "  Type: %d (%s)" % (self.packet_type, self.packet_type_name),
+            "  ID: %08x" % self.packet_id,
+            "  Data size: %d" % len(self.payload),
+            "  Checksum: %08x" % self.expected_checksum,
+        ]

@@ -16,46 +16,45 @@ import sys
 import threading
 import time
 
+import debug_connection
+import kd_packet
 from constants import *
 from util import *
 
 
-class _KDPassthroughSniffer:
+class TeeConnection:
+    """Models an interceptor between two connections."""
+
+    def __init__(self, read_connection, write_connection):
+        self._read_connection = read_connection
+        self._write_connection = write_connection
+
+    def recv(self, max_bytes):
+        """Reads up to `max_bytes`, writes them to the write_connection and returns them."""
+        buf = self._read_connection.recv(max_bytes)
+        if self._write_connection:
+            self._write_connection.sendall(buf)
+        return buf
+
+
+class _KDPassthroughSniffer(debug_connection.DebugConnection):
     def __init__(
         self, name, read_connection, write_connection, logger_semaphore, start_time
     ):
-        self.name = name
-        self.read_connection = read_connection
-        self.write_connection = write_connection
+        super(_KDPassthroughSniffer, self).__init__(name)
+
+        # Create a tee between the read and write connections, then use it as the
+        # read connection for the DebugConnection superclass.
+        connection = TeeConnection(read_connection, write_connection)
+        self.handle_socket(connection)
 
         self._logger_semaphore = logger_semaphore
         self._packet_log = []
-
         self.start_time = start_time
 
     @property
     def elapsed_time_ms(self):
         return int((time.perf_counter() - self.start_time) * 1000)
-
-    def _read(self, wanted):
-        """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
-        total = 0
-        ret = bytearray([])
-        while total < wanted:
-            buf = self.read_connection.recv(wanted - total)
-            count = len(buf)
-            if count:
-                total += count
-                ret += buf
-
-        return ret
-
-    def _read_and_passthrough(self, wanted):
-        ret = self._read(wanted)
-        if self.write_connection:
-            # TODO: Handle exception when the target socket is closed.
-            self.write_connection.sendall(ret)
-        return ret
 
     def _log(self, message, *args):
         """Buffers log messages until a packet is fully processed so the messages can be sent to the logger thread."""
@@ -69,85 +68,32 @@ class _KDPassthroughSniffer:
 
         self._packet_log = []
 
-    def _read_until_packet_leader(self):
-        buf = self._read_and_passthrough(4)
-        packet_signature = unpack_one("I", buf)
-
-        discarded_bytes = []
-        now = self.elapsed_time_ms
-
-        while packet_signature not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            discarded_bytes.append(buf[0])
-            buf = buf[1:] + self._read_and_passthrough(1)
-            packet_signature = unpack_one("I", buf)
+    def read_packet(self) -> (kd_packet.KDPacket, bytearray):
+        """Reads a single KD packet from the connection and logs it."""
+        packet, discarded_bytes = super(_KDPassthroughSniffer, self).read_packet()
 
         if discarded_bytes:
             self._log(
                 "[%s] @ %d: Discarded non-KD packet bytes %s",
-                self.name,
-                now,
+                self.endpoint,
+                self.elapsed_time_ms,
                 hexformat(discarded_bytes),
             )
-            self._flush_log()
 
-        return packet_signature
-
-    def read_packet(self):
-        payload = bytearray([])
-
-        packet_signature = self._read_until_packet_leader()
-
-        self._log("[%s] @ %d", self.name, self.elapsed_time_ms)
-        self._log(
-            "Packet leader: %08x (%s)",
-            packet_signature,
-            "Packet" if packet_signature == PACKET_LEADER else "ControlPacket",
-        )
-
-        buf = self._read_and_passthrough(2)
-        packet_type = unpack_one("H", buf)
-        packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
-        self._log("> Packet type: %d (%s)", packet_type, packet_type_name)
-        if packet_type_name == "<unknown>":
-            self._log("!! Unexpected packet type %04x", packet_type)
-
-        buf = self._read_and_passthrough(2)
-        data_size = unpack_one("H", buf)
-
-        buf = self._read_and_passthrough(4)
-        packet_id = unpack_one("I", buf)
-
-        buf = self._read_and_passthrough(4)
-        expected_checksum = unpack_one("I", buf)
-
-        self._log("> Packet ID: %08x", packet_id)
-        self._log("> Data size: %d", data_size)
-        self._log("> Checksum: %08x", expected_checksum)
-
-        if data_size:
-            payload = self._read_and_passthrough(data_size)
-
-        payload_checksum = generate_checksum(payload)
-        if payload_checksum != expected_checksum:
-            raise Exception(
-                f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}"
-            )
-
-        # send ack if it's a non-control packet
-        if packet_signature == PACKET_LEADER:
-            # packet trailer
-            # self._log("Reading trailer...")
-            trail = self._read_and_passthrough(1)
-            # self._log("Trailer: %x", trail[0])
-            if trail[0] != PACKET_TRAILER:
-                raise Exception("Invalid packet trailer 0x%x" % trail[0])
-
-        self._log_packet(packet_type, payload)
-
+        self._log_packet(packet)
         self._flush_log()
-        return True
 
-    def _log_packet(self, packet_type, payload):
+        return packet, discarded_bytes
+
+    def _log_packet(self, packet: kd_packet.KDPacket) -> None:
+        """Logs information about a KDPacket."""
+
+        self._log("[%s] @ %d", self.endpoint, self.elapsed_time_ms)
+        self._log("\n".join(packet.basic_log_info))
+
+        packet_type = packet.packet_type
+        payload = packet.payload
+
         if packet_type == PACKET_TYPE_KD_STATE_MANIPULATE:
             self._log_state_manipulate(payload)
         elif packet_type == PACKET_TYPE_KD_STATE_CHANGE64:
