@@ -67,7 +67,8 @@ def _create_fifos(named_pipe):
     create(f"{named_pipe}.out")
 
 
-def main(args):
+def main(args) -> int:
+    """Main entrypoint"""
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level)
 
@@ -83,7 +84,7 @@ def main(args):
     elif args.port:
         endpoint = (args.host, args.port)
     else:
-        raise RuntimeError(f"No supported transport method selected.")
+        raise RuntimeError("No supported transport method selected.")
 
     connection = debug_connection.DebugConnection(endpoint)
     connection.connect()

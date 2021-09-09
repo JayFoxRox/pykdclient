@@ -166,8 +166,8 @@ class KDPacket:
         # self._log(hexformat(substr(payload, 0, 16)))
 
         if api_number == constants.DbgKdWriteBreakPointApi:
-            breakpoint, handle = struct.unpack("II", self.payload[16:24])
-            ret.append("Breakpoint %d set at 0x%08x" % (handle, breakpoint))
+            brkpt, handle = struct.unpack("II", self.payload[16:24])
+            ret.append("Breakpoint %d set at 0x%08x" % (handle, brkpt))
 
         elif api_number == constants.DbgKdRestoreBreakPointApi:
             handle = struct.unpack("I", self.payload[16:20])[0]
@@ -253,8 +253,6 @@ class KDPacket:
 
         if new_state == constants.DbgKdExceptionStateChange:
             # DBGKM_EXCEPTION64
-            ex = self.payload[34:]
-
             code, flags, record, address, parameters = struct.unpack(
                 "IIQQI", self.payload[:28]
             )

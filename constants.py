@@ -40,6 +40,9 @@
 # WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
+# Constants are allowed to be camel case to match definitions in ReactOS source.
+# pylint: disable = invalid-name
+
 INITIAL_PACKET_ID = 0x80800000
 SYNC_PACKET_ID = 0x00000800
 

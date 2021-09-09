@@ -44,12 +44,14 @@ import struct
 
 
 def substr(buf, start, length=None):
+    """Returns a slice of the given buf starting at `start` of length `length`."""
     if length is None:
         return buf[start:]
     return buf[start : start + length]
 
 
 def patch_substr(buf, start, length, fmt, data=None):
+    """Replaces a subslice of the given buffer using struct.pack format specifiers."""
     if data is None:
         return buf[0:start] + fmt + buf[start + length :]
 
@@ -57,30 +59,33 @@ def patch_substr(buf, start, length, fmt, data=None):
 
 
 def unpack_one(fmt, data):
+    """Unpacks a single type from the given data using struct.unpack format specifiers."""
     assert len(fmt) == 1
     return struct.unpack(fmt, data)[0]  # pylint: disable = no-member
 
 
 def hexformat(buf):
+    """Returns a hex dump of the given byte array."""
     length = len(buf)
     if length == 0:
         return None
 
-    b = "0000  "
-    c = 0
-    for x in buf:
-        c += 1
-        b += "%02x " % x
-        if (c % 16) == 0 and c < length:
-            b += "\n%04x " % c
+    ret = "0000  "
+    offset = 0
+    for value in buf:
+        offset += 1
+        ret += "%02x " % value
+        if (offset % 16) == 0 and offset < length:
+            ret += "\n%04x  " % offset
 
-    if b[-1] != "\n":
-        b += "\n"
+    if ret[-1] != "\n":
+        ret += "\n"
 
-    return b
+    return ret
 
 
 def hexasc(buf):
+    """Returns an ASCII dump of the given byte array."""
     length = len(buf)
     if length == 0:
         return None
@@ -88,11 +93,11 @@ def hexasc(buf):
     count = 0
     ascii_string = ""
     out = "0000  "
-    for x in buf:
-        c = ord(x)
-        out += "%02x " % c
-        if 0x1F < c < 0x7F:
-            ascii_string += x
+    for value in buf:
+        codepoint = ord(value)
+        out += "%02x " % codepoint
+        if 0x1F < codepoint < 0x7F:
+            ascii_string += value
         else:
             ascii_string += "."
         count += 1
@@ -113,7 +118,8 @@ def hexasc(buf):
 
 
 def generate_checksum(buf):
-    v = 0
-    for b in buf:
-        v += b
-    return v
+    """Generates the KD checksum of the given byte array."""
+    checksum = 0
+    for value in buf:
+        checksum += value
+    return checksum

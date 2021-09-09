@@ -9,6 +9,8 @@
 # 3. Start the debuggee qemu instance with
 #    `-serial tcp:<sniffer_ip>:<sniffer_port>`
 
+# pylint: disable = too-many-arguments, too-few-public-methods, too-many-instance-attributes
+
 import argparse
 import socket
 import socketserver
@@ -18,8 +20,7 @@ import time
 
 import debug_connection
 import kd_packet
-from constants import *
-from util import *
+from util import *  # pylint: disable = wildcard-import, unused-wildcard-import
 
 
 class TeeConnection:
@@ -41,7 +42,7 @@ class _KDPassthroughSniffer(debug_connection.DebugConnection):
     def __init__(
         self, name, read_connection, write_connection, logger_semaphore, start_time
     ):
-        super(_KDPassthroughSniffer, self).__init__(name)
+        super().__init__(name)
 
         # Create a tee between the read and write connections, then use it as the
         # read connection for the DebugConnection superclass.
@@ -54,10 +55,11 @@ class _KDPassthroughSniffer(debug_connection.DebugConnection):
 
     @property
     def elapsed_time_ms(self):
+        """Returns the milliseconds elapsed since this sniffer was started."""
         return int((time.perf_counter() - self.start_time) * 1000)
 
     def _log(self, message, *args):
-        """Buffers log messages until a packet is fully processed so the messages can be sent to the logger thread."""
+        """Buffers log messages for later synchronized output."""
         self._packet_log.append(message % args)
 
     def _flush_log(self):
@@ -70,7 +72,7 @@ class _KDPassthroughSniffer(debug_connection.DebugConnection):
 
     def read_packet(self) -> (kd_packet.KDPacket, bytearray):
         """Reads a single KD packet from the connection and logs it."""
-        packet, discarded_bytes = super(_KDPassthroughSniffer, self).read_packet()
+        packet, discarded_bytes = super().read_packet()
 
         if discarded_bytes:
             self._log(
@@ -110,6 +112,7 @@ class _DebuggerConnection:
         self.start_time = time.perf_counter()
 
     def register_debuggee(self, handler) -> _KDPassthroughSniffer:
+        """Registers a StreamRequestHandler modeling the debuggee."""
         with self._debuggee_semaphore:
             self._debuggee = handler
             self.debugger_sniffer = _KDPassthroughSniffer(
@@ -129,18 +132,22 @@ class _DebuggerConnection:
         )
 
     def unregister_debuggee(self, _handler):
+        """Unregisters the previously registered debuggee handler."""
         with self._debuggee_semaphore:
             self._debuggee = None
             self.debugger_sniffer = None
 
     def sendall(self, data, flags=0):
+        """Sends the given data to the debugger."""
         return self.debugger_socket.sendall(data, flags)
 
     def stop(self):
+        """Stops this sniffer."""
         with self._debuggee_semaphore:
             self._running = False
 
-    def _debugger_thread_main(self):
+    def debugger_thread_main(self):
+        """Thread entrypoint for this debugger instance."""
         while True:
             with self._debuggee_semaphore:
                 if not self._running:
@@ -164,12 +171,12 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
     """Handles connection to a debuggee VM."""
 
     def setup(self) -> None:
-        super(_DebuggeeHandler, self).setup()
+        super().setup()
         self.debugger = self.server.debugger
         self.sniffer = self.debugger.register_debuggee(self)
 
     def finish(self) -> None:
-        super(_DebuggeeHandler, self).finish()
+        super().finish()
         self.debugger.unregister_debuggee(self)
 
         print(f"Debuggee at {self.client_address[0]} disconnectected\n")
@@ -180,11 +187,11 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
         while True:
             try:
                 self.sniffer.read_packet()
-            except OSError as ex:
-                print(f"Failed to read packet from Debuggee {ex}")
-                break
             except ConnectionResetError as ex:
                 print(f"Debuggee disconnected: {ex}")
+                break
+            except OSError as ex:
+                print(f"Failed to read packet from Debuggee {ex}")
                 break
 
 
@@ -200,7 +207,7 @@ def main(args):
     server.debugger = debugger_connection
 
     debugger_thread = threading.Thread(
-        target=_DebuggerConnection._debugger_thread_main, args=(debugger_connection,)
+        target=_DebuggerConnection.debugger_thread_main, args=(debugger_connection,)
     )
 
     try:

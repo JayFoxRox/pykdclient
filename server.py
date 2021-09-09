@@ -8,7 +8,7 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
     """Handles connection to a debuggee VM."""
 
     def setup(self) -> None:
-        super(_DebuggeeHandler, self).setup()
+        super().setup()
         self.debugger = self.server.debugger
         client = debug_connection.DebugConnection(self.client_address)
         client.handle_socket(self.connection)
@@ -16,7 +16,7 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
         self.debugger.connection = client
 
     def finish(self) -> None:
-        super(_DebuggeeHandler, self).finish()
+        super().finish()
         print(f"Debuggee at {self.client_address[0]} disconnectected\n")
 
     def handle(self) -> None:
@@ -25,7 +25,7 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
 
 
 def serve(host, port, debugger_connection):
-    """Listens for connections on the given host:port and hands them to the given debugger context."""
+    """Listens for connections at host:port and hands them to the given debugger context."""
 
     print(f"Waiting for debuggee at {host}:{port}")
     server = socketserver.ThreadingTCPServer((host, port), _DebuggeeHandler)
