@@ -77,7 +77,7 @@ class _KDPassthroughSniffer:
         now = self.elapsed_time_ms
 
         while packet_signature not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            discarded_bytes += buf[0]
+            discarded_bytes.append(buf[0])
             buf = buf[1:] + self._read_and_passthrough(1)
             packet_signature = unpack("I", buf)
 
@@ -157,8 +157,18 @@ class _KDPassthroughSniffer:
 
     def _log_state_manipulate(self, payload):
         apiNumber = unpack("I", substr(payload, 0, 4))
-        self._log("State Manipulate: %08x", apiNumber)
-        self._log(hexformat(substr(payload, 0, 16)))
+        self._log(
+            "State Manipulate: %08x (%s)",
+            apiNumber,
+            STATE_MANIPULATE_TABLE.get(apiNumber, "<unknown>"),
+        )
+
+        processor_level = unpack("H", substr(payload, 4, 2))
+        processor = unpack("H", substr(payload, 6, 2))
+        return_status = unpack("I", substr(payload, 8, 4))
+
+        # self._log(hexformat(substr(payload, 0, 16)))
+        self._log(hexformat(payload))
 
         if apiNumber == DbgKdWriteBreakPointApi:
             bp = "%08x" % unpack("I", substr(payload, 16, 4))
@@ -170,6 +180,7 @@ class _KDPassthroughSniffer:
         elif apiNumber == DbgKdGetVersionApi:
             version = substr(payload, 16)
             self._log("VERS: %s", hexformat(version))
+            self._log_version(payload[12:])
         elif apiNumber == DbgKdReadVirtualMemoryApi:
             vmem = substr(payload, 56)
             self._log("VMEM:\n%s", hexasc(vmem))
@@ -182,11 +193,33 @@ class _KDPassthroughSniffer:
         else:
             self._log("UNKN: %s", hexasc(payload))
 
-    def _log_state_change64(self, payload):
-        newState = unpack("I", substr(payload, 0, 4))
-        self._log("State Change: New state: %08x", newState)
+    def _log_version(self, payload):
+        # USHORT MajorVersion;
+        # USHORT MinorVersion;
+        # UCHAR ProtocolVersion;
+        # UCHAR KdSecondaryVersion;
+        # USHORT Flags;
+        # USHORT MachineType;
+        # UCHAR MaxPacketType;
+        # UCHAR MaxStateChange;
+        # UCHAR MaxManipulate;
+        # UCHAR Simulation;
+        # USHORT Unused[1];
+        # ULONG64 KernBase;
+        # ULONG64 PsLoadedModuleList;
+        # ULONG64 DebuggerDataList;
+        pass
 
-        if newState == DbgKdExceptionStateChange:
+    def _log_state_change64(self, payload):
+        new_state = unpack("I", substr(payload, 0, 4))
+        self._log(
+            "State Change: New state: %08x (%s)",
+            new_state,
+            STATE_CHANGE_TABLE.get(new_state, "<unknown>"),
+        )
+        # self._log(hexformat(payload))
+
+        if new_state == DbgKdExceptionStateChange:
             # DBGKM_EXCEPTION64
             ex = substr(payload, 32)
 
@@ -213,7 +246,7 @@ class _KDPassthroughSniffer:
             # my @v = getVersionInfo()
             # version  = v[0]
             # $kernelbase = v[2]
-        elif newState == DbgKdLoadSymbolsStateChange:
+        elif new_state == DbgKdLoadSymbolsStateChange:
             # DBGKD_LOAD_SYMBOLS64
 
             filename = payload[0x3B8:-1]
@@ -282,7 +315,11 @@ class _DebuggerConnection:
                 continue
 
             # TODO: Make this handle unregistration gracefully.
-            sniffer.read_packet()
+            try:
+                sniffer.read_packet()
+            except OSError as ex:
+                print(f"Failed to read packet: {ex}")
+                break
 
 
 class _DebuggeeHandler(socketserver.StreamRequestHandler):
@@ -297,11 +334,19 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
         super(_DebuggeeHandler, self).finish()
         self.debugger.unregister_debuggee(self)
 
+        print(f"Debuggee at {self.client_address[0]} disconnectected\n")
+
     def handle(self) -> None:
-        print(f"Debuggee connected from {self.client_address[0]}")
+        print(f"Debuggee connected from {self.client_address[0]}\n")
 
         while True:
-            if not self.sniffer.read_packet():
+            try:
+                self.sniffer.read_packet()
+            except OSError as ex:
+                print(f"Failed to read packet from Debuggee {ex}")
+                break
+            except ConnectionResetError as ex:
+                print(f"Debuggee disconnected: {ex}")
                 break
 
 

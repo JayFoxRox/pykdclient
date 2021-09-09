@@ -76,6 +76,11 @@ DbgKdGetStringApi = 0x00003231
 DbgKdExceptionStateChange = 0x00003030
 DbgKdLoadSymbolsStateChange = 0x00003031
 
+STATE_CHANGE_TABLE = {
+    DbgKdExceptionStateChange: "DbgKdExceptionStateChange",
+    DbgKdLoadSymbolsStateChange: "DbgKdLoadSymbolsStateChange",
+}
+
 # PACKET_TYPE_KD_STATE_MANIPULATE api numbers
 # DBGKD_MANIPULATE_STATE64
 DbgKdReadVirtualMemoryApi = 0x00003130
@@ -112,7 +117,45 @@ DbgKdGetBusDataApi = 0x00003157
 DbgKdSetBusDataApi = 0x00003158
 DbgKdCheckLowMemoryApi = 0x00003159
 
+STATE_MANIPULATE_TABLE = {
+    DbgKdReadVirtualMemoryApi: "DbgKdReadVirtualMemoryApi",
+    DbgKdWriteVirtualMemoryApi: "DbgKdWriteVirtualMemoryApi",
+    DbgKdGetContextApi: "DbgKdGetContextApi",
+    DbgKdSetContextApi: "DbgKdSetContextApi",
+    DbgKdWriteBreakPointApi: "DbgKdWriteBreakPointApi",
+    DbgKdRestoreBreakPointApi: "DbgKdRestoreBreakPointApi",
+    DbgKdContinueApi: "DbgKdContinueApi",
+    DbgKdReadControlSpaceApi: "DbgKdReadControlSpaceApi",
+    DbgKdWriteControlSpaceApi: "DbgKdWriteControlSpaceApi",
+    DbgKdReadIoSpaceApi: "DbgKdReadIoSpaceApi",
+    DbgKdWriteIoSpaceApi: "DbgKdWriteIoSpaceApi",
+    DbgKdRebootApi: "DbgKdRebootApi",
+    DbgKdContinueApi2: "DbgKdContinueApi2",
+    DbgKdReadPhysicalMemoryApi: "DbgKdReadPhysicalMemoryApi",
+    DbgKdWritePhysicalMemoryApi: "DbgKdWritePhysicalMemoryApi",
+    DbgKdSetSpecialCallApi: "DbgKdSetSpecialCallApi",
+    DbgKdClearSpecialCallsApi: "DbgKdClearSpecialCallsApi",
+    DbgKdSetInternalBreakPointApi: "DbgKdSetInternalBreakPointApi",
+    DbgKdGetInternalBreakPointApi: "DbgKdGetInternalBreakPointApi",
+    DbgKdReadIoSpaceExtendedApi: "DbgKdReadIoSpaceExtendedApi",
+    DbgKdWriteIoSpaceExtendedApi: "DbgKdWriteIoSpaceExtendedApi",
+    DbgKdGetVersionApi: "DbgKdGetVersionApi",
+    DbgKdWriteBreakPointExApi: "DbgKdWriteBreakPointExApi",
+    DbgKdRestoreBreakPointExApi: "DbgKdRestoreBreakPointExApi",
+    DbgKdCauseBugCheckApi: "DbgKdCauseBugCheckApi",
+    DbgKdSwitchProcessor: "DbgKdSwitchProcessor",
+    DbgKdPageInApi: "DbgKdPageInApi",
+    DbgKdReadMachineSpecificRegister: "DbgKdReadMachineSpecificRegister",
+    DbgKdWriteMachineSpecificRegister: "DbgKdWriteMachineSpecificRegister",
+    DbgKdSearchMemoryApi: "DbgKdSearchMemoryApi",
+    DbgKdGetBusDataApi: "DbgKdGetBusDataApi",
+    DbgKdSetBusDataApi: "DbgKdSetBusDataApi",
+    DbgKdCheckLowMemoryApi: "DbgKdCheckLowMemoryApi",
+}
+
+
 HRESULT_STATUS_SUCCESS = 0x00000000
+HRESULT_STATUS_PENDING = 0x00000103
 HRESULT_STATUS_UNSUCCESSFUL = 0xC0000001
 HRESULT_DBG_EXCEPTION_HANDLED = 0x00010001
 HRESULT_DBG_CONTINUE = 0x00010002
