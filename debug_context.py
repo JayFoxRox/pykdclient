@@ -49,6 +49,7 @@ import time
 
 from constants import *
 from debug_connection import DebugConnection
+import kd_packet
 from util import *
 from windpl_extra import logical2physical
 
@@ -80,10 +81,10 @@ class DebugContext:
         self.controlspace = 0
         self.controlspacesent = False
 
-        self.client = None
+        self.connection = None
 
     def set_connection(self, connection: DebugConnection) -> None:
-        self.client = connection
+        self.connection = connection
 
     def run(self):
         logging.info("Waiting for target device...")
@@ -103,10 +104,29 @@ class DebugContext:
 
     @property
     def elapsed_time_ms(self):
-        return time.perf_counter() - self.start_time
+        return int((time.perf_counter() - self.start_time) * 1000)
+
+    def _receive_packet(self) -> kd_packet.KDPacket:
+        """Receives one KD packet from the connection, discarding partial data."""
+        now = self.elapsed_time_ms
+        packet, discarded_bytes = self.connection.read_packet()
+        if discarded_bytes:
+            logging.debug(
+                "[%d] Discarded non-KD packet bytes %s",
+                now,
+                hexformat(discarded_bytes),
+            )
+        if packet.needs_ack:
+            self._sendAck()
+        return packet
 
     def _handlePacket(self):
-        ptype, buf = self._getPacket()
+        """Processes one packet from the connection."""
+        packet = self._receive_packet()
+        self._log_packet(packet, self.elapsed_time_ms)
+
+        ptype = packet.packet_type
+        buf = packet.payload
 
         if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
             self._handleStateManipulate(buf)
@@ -125,82 +145,26 @@ class DebugContext:
 
         return ptype, buf
 
-    def _read_until_packet_leader(self):
-        buf = self.client.read(4)
-        packet_signature = unpack_one("I", buf)
-
-        discarded_bytes = []
-        now = self.elapsed_time_ms
-
-        while packet_signature not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            discarded_bytes.append(buf[0])
-            buf = buf[1:] + self.client.read(1)
-            packet_signature = unpack_one("I", buf)
-
-        if discarded_bytes:
-            logging.debug(
-                "[%d] Discarded non-KD packet bytes %s",
-                now,
-                hexformat(discarded_bytes),
-            )
-
-        return packet_signature
-
-    def _getPacket(self):
-        packet_type = None
-        payload = bytearray([])
-        packet_signature = self._read_until_packet_leader()
-
+    def _log_packet(self, packet: kd_packet.KDPacket, read_time: int):
         logging.debug(
             "[%d] Got packet leader: %08x (%s)",
-            int(self.elapsed_time_ms * 1000),
-            packet_signature,
-            "Packet" if packet_signature == PACKET_LEADER else "ControlPacket",
+            read_time,
+            packet.packet_leader,
+            packet.packet_group_name,
         )
+        logging.debug(
+            "> Packet type: %d (%s)", packet.packet_type, packet.packet_type_name
+        )
+        if packet.packet_type_name == "<unknown>":
+            logging.critical("!! Unexpected packet type %04x", packet.packet_type)
+        logging.debug("> Packet ID: %08x", packet.packet_id)
+        logging.debug("> Data size: %d", len(packet.payload))
+        logging.debug("> Checksum: %08x", packet.expected_checksum)
 
-        buf = self.client.read(2)
-        packet_type = unpack_one("H", buf)
-        packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
-        logging.debug("> Packet type: %d (%s)", packet_type, packet_type_name)
-        if packet_type_name == "<unknown>":
-            logging.critical("!! Unexpected packet type %04x", packet_type)
-
-        buf = self.client.read(2)
-        data_size = unpack_one("H", buf)
-
-        buf = self.client.read(4)
-        packet_id = unpack_one("I", buf)
-        self.nextpid = packet_id
-
-        buf = self.client.read(4)
-        expected_checksum = unpack_one("I", buf)
-
-        logging.debug("> Packet ID: %08x", packet_id)
-        logging.debug("> Data size: %d", data_size)
-        logging.debug("> Checksum: %08x", expected_checksum)
-
-        if data_size:
-            payload = self.client.read(data_size)
-
-        payload_checksum = generate_checksum(payload)
-        if payload_checksum != expected_checksum:
+        if packet.actual_checksum != packet.expected_checksum:
             raise Exception(
-                f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}"
+                f"!! Checksum invalid. Expected {packet.expected_checksum} but calculated {packet.actual_checksum}"
             )
-
-        # send ack if it's a non-control packet
-        if packet_signature == PACKET_LEADER:
-            # packet trailer
-            # logging.debug("Reading trailer...")
-            trail = self.client.read(1)
-            # logging.debug("Trailer: %x", trail[0])
-            if trail[0] == PACKET_TRAILER:
-                # logging.debug("sending Ack")
-                self._sendAck()
-            else:
-                raise Exception("Invalid packet trailer 0x%x" % trail[0])
-
-        return packet_type, payload
 
     def _handleDebugIO(self, buf):  # pylint: disable = no-self-use
         apiNumber = unpack_one("I", substr(buf, 0, 4))
@@ -290,16 +254,16 @@ class DebugContext:
             0,
         )
         # logging.debug("Ack: %s", hexformat(ack_packet))
-        self.client.write(ack_packet)
+        self.connection.write(ack_packet)
 
     def _sendReset(self):
         reset_packet = pack(
-            "IHHII", CONTROL_PACKET_LEADER, PACKET_TYPE_KD_RESET, 0, 0x00008080, 0
+            "IHHII", CONTROL_PACKET_LEADER, PACKET_TYPE_KD_RESET, 0, 0x0000BEEF, 0
         )
 
         logging.debug("Sending reset packet\n\n")
         # print(hexformat(rst)
-        self.client.write(reset_packet)
+        self.connection.write(reset_packet)
 
     def _getContext(self):
         context = {}
@@ -478,9 +442,9 @@ class DebugContext:
             hexformat(header),
             hexformat(d),
         )
-        self.client.write(header)
-        self.client.write(d)
-        self.client.write(bytes([PACKET_TRAILER]))
+        self.connection.write(header)
+        self.connection.write(d)
+        self.connection.write(bytes([PACKET_TRAILER]))
 
     def _sendDbgKdContinue2(self):
         logging.debug("< Sending DbgKdContinueApi2 packet")

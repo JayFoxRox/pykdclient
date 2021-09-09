@@ -13,7 +13,7 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
         client = debug_connection.DebugConnection(self.client_address)
         client.handle_socket(self.connection)
 
-        self.debugger.client = client
+        self.debugger.connection = client
 
     def finish(self) -> None:
         super(_DebuggeeHandler, self).finish()

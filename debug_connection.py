@@ -4,6 +4,10 @@ import logging
 import os
 import pathlib
 import socket
+import struct
+
+from constants import PACKET_LEADER, CONTROL_PACKET_LEADER, PACKET_TRAILER
+import kd_packet
 
 
 class DebugConnection:
@@ -72,6 +76,77 @@ class DebugConnection:
     def disconnect(self):
         pass
 
+    def _read_packet_leader(self) -> (int, bytearray):
+        """Reads from the connection until a valid packet leader is found.
+
+        Returns (packet_leader, discarded_bytes):
+        - packet_leader: The 4 byte leader that was read
+        - discarded_bytes: An array of bytes that were read and discarded
+                           before the leader was found.
+        """
+        buf = self.read(4)
+        packet_leader = struct.unpack("I", buf)[0]
+
+        discarded_bytes = bytearray([])
+        while packet_leader not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
+            discarded_bytes.append(buf[0])
+            buf = buf[1:] + self.read(1)
+            packet_leader = struct.unpack("I", buf)[0]
+
+        return packet_leader, discarded_bytes
+
+    def read_packet(self) -> (kd_packet.KDPacket, bytearray):
+        """Reads a single KD packet from the connection."""
+        packet_leader, discarded_bytes = self._read_packet_leader()
+
+        buf = self.read(12)
+        (packet_type, data_size, packet_id, expected_checksum) = struct.unpack(
+            "HHII", buf
+        )
+
+        if data_size:
+            payload = self.read(data_size)
+        else:
+            payload = bytearray([])
+
+        # send ack if it's a non-control packet
+        if packet_leader == PACKET_LEADER:
+            # packet trailer
+            # self._log("Reading trailer...")
+            trail = self.read(1)
+            # self._log("Trailer: %x", trail[0])
+            if trail[0] != PACKET_TRAILER:
+                raise Exception("Invalid packet trailer 0x%x" % trail[0])
+
+        return (
+            kd_packet.KDPacket(
+                packet_leader, packet_type, packet_id, expected_checksum, payload
+            ),
+            discarded_bytes,
+        )
+
+    def read(self, wanted):
+        """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
+        total = 0
+        outbuf = bytearray([])
+        while total < wanted:
+            buf = self._recv(wanted - total)
+            count = len(buf)
+            if count:
+                total += count
+                outbuf += buf
+            else:
+                raise ConnectionResetError("Failed to read from connection.")
+
+        return outbuf
+
+    def write(self, buffer):
+        """Writes `buffer` to the connection, blocking as necessary."""
+
+        while len(buffer):
+            written = self._send(buffer)
+            buffer = buffer[written:]
+
     def _recv_fifo(self, max_bytes):
         """Receives up to `max_bytes` bytes from the connection."""
         bytes_read = os.read(self._connection_read, max_bytes)
@@ -94,36 +169,3 @@ class DebugConnection:
     def _send_socket(self, buf):
         """Sends some or all of the given buf, returns the number of bytes actually sent."""
         return self._connection_write.send(buf)
-
-    def read(self, wanted):
-        """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
-        total = 0
-        outbuf = bytearray([])
-        while total < wanted:
-            # if False:
-            #     if serial:
-            #         (count, buf) = serial.read(1)
-            #     else:
-            #         # FH.blocking(1)
-            #         count = client.sysread(buf, 1)
-            #         if count == 0:
-            #             die("eof")
-            #             # print("client.read count %x\n", ord(buf)
-            #         # FH.blocking(0)
-            buf = self._recv(wanted - total)
-
-            count = len(buf)
-            if count:
-                total += count
-                outbuf += buf
-            else:
-                raise ConnectionResetError("Failed to read from connection.")
-
-        return outbuf
-
-    def write(self, buffer):
-        """Writes `buffer` to the connection, blocking as necessary."""
-
-        while len(buffer):
-            written = self._send(buffer)
-            buffer = buffer[written:]
