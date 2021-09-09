@@ -2,6 +2,7 @@
 import os
 import pathlib
 
+
 class DebugConnection:
     """Models a connection to the target device (e.g. FIFO, socket)."""
 
@@ -17,12 +18,14 @@ class DebugConnection:
 
         path = pathlib.Path(self.endpoint)
         if not path.exists():
+
             def require_fifo_exists(fifo_path):
                 path = pathlib.Path(fifo_path)
                 if not path.exists():
                     raise Exception(
                         "Qemu requires two pipes with a common base name and '.in' and '.out' suffixes. "
-                        "E.g., '/tmp/foo.in' and '/tmp/foo.out'.")
+                        "E.g., '/tmp/foo.in' and '/tmp/foo.out'."
+                    )
 
                 if not path.is_fifo():
                     raise Exception(f"'{path.name}' is not a fifo.")
@@ -35,7 +38,7 @@ class DebugConnection:
             require_fifo_exists(read_fifo)
 
             flags = os.O_RDWR
-            if os.name == 'nt':
+            if os.name == "nt":
                 flags |= os.O_BINARY
 
             self._connection_write = os.open(write_fifo, flags)
@@ -46,7 +49,8 @@ class DebugConnection:
         if path.is_fifo():
             raise Exception(
                 "Qemu requires two pipes with a common base name and '.in' and '.out' suffixes. "
-                "E.g., '/tmp/foo.in' and '/tmp/foo.out'.")
+                "E.g., '/tmp/foo.in' and '/tmp/foo.out'."
+            )
         else:
             raise Exception(f"Unsupported connection type {self.endpoint}")
 

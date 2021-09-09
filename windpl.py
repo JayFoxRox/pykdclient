@@ -52,172 +52,10 @@ import struct
 from struct import pack  # pylint: disable = no-name-in-module
 import time
 
+from constants import *
 from debug_connection import DebugConnection
+from util import *
 from windpl_extra import logical2physical
-
-PACKET_LEADER = 0x30303030
-CONTROL_PACKET_LEADER = 0x69696969
-PACKET_TRAILER = 0xAA
-
-PACKET_TYPE_UNUSED = 0
-PACKET_TYPE_KD_STATE_CHANGE32 = 1
-PACKET_TYPE_KD_STATE_MANIPULATE = 2
-PACKET_TYPE_KD_DEBUG_IO = 3
-PACKET_TYPE_KD_ACKNOWLEDGE = 4
-PACKET_TYPE_KD_RESEND = 5
-PACKET_TYPE_KD_RESET = 6
-PACKET_TYPE_KD_STATE_CHANGE64 = 7
-PACKET_TYPE_MAX = 8
-
-PACKET_TYPE_TABLE = {
-    PACKET_TYPE_UNUSED: "PACKET_TYPE_UNUSED",
-    PACKET_TYPE_KD_STATE_CHANGE32: "PACKET_TYPE_KD_STATE_CHANGE32",
-    PACKET_TYPE_KD_STATE_MANIPULATE: "PACKET_TYPE_KD_STATE_MANIPULATE",
-    PACKET_TYPE_KD_DEBUG_IO: "PACKET_TYPE_KD_DEBUG_IO",
-    PACKET_TYPE_KD_ACKNOWLEDGE: "PACKET_TYPE_KD_ACKNOWLEDGE",
-    PACKET_TYPE_KD_RESEND: "PACKET_TYPE_KD_RESEND",
-    PACKET_TYPE_KD_RESET: "PACKET_TYPE_KD_RESET",
-    PACKET_TYPE_KD_STATE_CHANGE64: "PACKET_TYPE_KD_STATE_CHANGE64",
-    PACKET_TYPE_MAX: "PACKET_TYPE_MAX",
-}
-
-# PACKET_TYPE_KD_DEBUG_IO apis
-# DBGKD_DEBUG_IO
-DbgKdPrintStringApi = 0x00003230
-DbgKdGetStringApi = 0x00003231
-
-# PACKET_TYPE_KD_STATE_CHANGE states
-# X86_NT5_DBGKD_WAIT_STATE_CHANGE64
-DbgKdExceptionStateChange = 0x00003030
-DbgKdLoadSymbolsStateChange = 0x00003031
-
-# PACKET_TYPE_KD_STATE_MANIPULATE api numbers
-# DBGKD_MANIPULATE_STATE64
-DbgKdReadVirtualMemoryApi = 0x00003130
-DbgKdWriteVirtualMemoryApi = 0x00003131
-DbgKdGetContextApi = 0x00003132
-DbgKdSetContextApi = 0x00003133
-DbgKdWriteBreakPointApi = 0x00003134
-DbgKdRestoreBreakPointApi = 0x00003135
-DbgKdContinueApi = 0x00003136
-DbgKdReadControlSpaceApi = 0x00003137
-DbgKdWriteControlSpaceApi = 0x00003138
-DbgKdReadIoSpaceApi = 0x00003139
-DbgKdWriteIoSpaceApi = 0x0000313A
-DbgKdRebootApi = 0x0000313B
-DbgKdContinueApi2 = 0x0000313C
-DbgKdReadPhysicalMemoryApi = 0x0000313D
-DbgKdWritePhysicalMemoryApi = 0x0000313E
-DbgKdSetSpecialCallApi = 0x00003140
-DbgKdClearSpecialCallsApi = 0x00003141
-DbgKdSetInternalBreakPointApi = 0x00003142
-DbgKdGetInternalBreakPointApi = 0x00003143
-DbgKdReadIoSpaceExtendedApi = 0x00003144
-DbgKdWriteIoSpaceExtendedApi = 0x00003145
-DbgKdGetVersionApi = 0x00003146
-DbgKdWriteBreakPointExApi = 0x00003147
-DbgKdRestoreBreakPointExApi = 0x00003148
-DbgKdCauseBugCheckApi = 0x00003149
-DbgKdSwitchProcessor = 0x00003150
-DbgKdPageInApi = 0x00003151
-DbgKdReadMachineSpecificRegister = 0x00003152
-DbgKdWriteMachineSpecificRegister = 0x00003153
-DbgKdSearchMemoryApi = 0x00003156
-DbgKdGetBusDataApi = 0x00003157
-DbgKdSetBusDataApi = 0x00003158
-DbgKdCheckLowMemoryApi = 0x00003159
-
-HRESULT_STATUS_SUCCESS = 0x00000000
-HRESULT_STATUS_UNSUCCESSFUL = 0xC0000001
-HRESULT_DBG_EXCEPTION_HANDLED = 0x00010001
-HRESULT_DBG_CONTINUE = 0x00010002
-HRESULT_DBG_REPLY_LATER = 0x40010001
-HRESULT_DBG_UNABLE_TO_PROVIDE_HANDLE = 0x40010002
-HRESULT_DBG_TERMINATE_THREAD = 0x40010003
-HRESULT_DBG_TERMINATE_PROCESS = 0x40010004
-HRESULT_DBG_CONTROL_C = 0x40010005
-HRESULT_DBG_PRINTEXCEPTION_C = 0x40010006
-HRESULT_DBG_RIPEXCEPTION = 0x40010007
-HRESULT_DBG_CONTROL_BREAK = 0x40010008
-HRESULT_DBG_COMMAND_EXCEPTION = 0x40010009
-HRESULT_DBG_EXCEPTION_NOT_HANDLED = 0x80010001
-HRESULT_DBG_NO_STATE_CHANGE = 0xC0010001
-HRESULT_DBG_APP_NOT_IDLE = 0xC0010002
-
-
-def substr(buf, start, length=None):
-    if length is None:
-        return buf[start:]
-    return buf[start : start + length]
-
-
-def patch_substr(buf, start, length, fmt, data=None):
-    if data is None:
-        return buf[0:start] + fmt + buf[start + length :]
-
-    return buf[0:start] + pack(fmt, data) + buf[start + length :]
-
-
-def unpack(fmt, data):
-    return struct.unpack(fmt, data)[0]  # pylint: disable = no-member
-
-
-def hexformat(buf):
-    length = len(buf)
-    if length == 0:
-        return None
-
-    b = "0000  "
-    c = 0
-    for x in buf:
-        c += 1
-        b += "%02x " % x
-        if (c % 16) == 0 and c < length:
-            b += "\n%04x " % c
-
-    if b[-1] != "\n":
-        b += "\n"
-
-    return b
-
-
-def hexasc(buf):
-    length = len(buf)
-    if length == 0:
-        return None
-
-    count = 0
-    ascii_string = ""
-    out = "0000  "
-    for x in buf:
-        c = ord(x)
-        out += "%02x " % c
-        if 0x1F < c < 0x7F:
-            ascii_string += x
-        else:
-            ascii_string += "."
-        count += 1
-        if (count % 16) == 0:
-            if count < length:
-                out += " " + ascii_string + "\n%04x  " % count
-            else:
-                out += " " + ascii_string + "\n"
-                ascii_string = ""
-
-    padding = 0
-    if ascii_string:
-        padding = 48 - ((count % 16) * 3)
-
-    out += " " * padding
-    out += " " + ascii_string + "\n"
-    return out
-
-
-def generate_checksum(buf):
-    v = 0
-    for b in buf:
-        v += b
-    return v
 
 
 class DebugContext:
@@ -310,7 +148,7 @@ class DebugContext:
     def _getPacket(self):
         packet_type = None
         payload = bytearray([])
-        buf = self.client.read(4)
+        buf = self.client._read_and_passthrough(4)
         packet_signature = unpack("I", buf)
         if packet_signature in (PACKET_LEADER, CONTROL_PACKET_LEADER):
             logging.debug(
@@ -320,21 +158,21 @@ class DebugContext:
                 "Packet" if packet_signature == PACKET_LEADER else "ControlPacket",
             )
 
-            buf = self.client.read(2)
+            buf = self.client._read_and_passthrough(2)
             packet_type = unpack("H", buf)
             packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
             logging.debug("> Packet type: %d (%s)", packet_type, packet_type_name)
             if packet_type_name == "<unknown>":
                 logging.critical("!! Unexpected packet type %04x", packet_type)
 
-            buf = self.client.read(2)
+            buf = self.client._read_and_passthrough(2)
             data_size = unpack("H", buf)
 
-            buf = self.client.read(4)
+            buf = self.client._read_and_passthrough(4)
             packet_id = unpack("I", buf)
             self.nextpid = packet_id
 
-            buf = self.client.read(4)
+            buf = self.client._read_and_passthrough(4)
             expected_checksum = unpack("I", buf)
 
             logging.debug("> Packet ID: %08x", packet_id)
@@ -342,7 +180,7 @@ class DebugContext:
             logging.debug("> Checksum: %08x", expected_checksum)
 
             if data_size:
-                payload = self.client.read(data_size)
+                payload = self.client._read_and_passthrough(data_size)
 
             payload_checksum = generate_checksum(payload)
             if payload_checksum != expected_checksum:
@@ -354,7 +192,7 @@ class DebugContext:
             if packet_signature == PACKET_LEADER:
                 # packet trailer
                 # logging.debug("Reading trailer...")
-                trail = self.client.read(1)
+                trail = self.client._read_and_passthrough(1)
                 # logging.debug("Trailer: %x", trail[0])
                 if trail[0] == PACKET_TRAILER:
                     # logging.debug("sending Ack")
@@ -377,26 +215,6 @@ class DebugContext:
         logging.debug("State Change: New state: %08x", newState)
 
         if newState == DbgKdExceptionStateChange:
-            exceptions = {
-                0xC0000005: "EXCEPTION_ACCESS_VIOLATION",
-                0xC000008C: "EXCEPTION_ARRAY_BOUNDS_EXCEEDED",
-                0x80000003: "EXCEPTION_BREAKPOINT",
-                0x80000002: "EXCEPTION_DATATYPE_MISALIGNMENT",
-                0xC000008D: "EXCEPTION_FLT_DENORMAL_OPERAND",
-                0xC000008E: "EXCEPTION_FLT_DIVIDE_BY_ZERO",
-                0xC000008F: "EXCEPTION_FLT_INEXACT_RESULT",
-                0xC0000030: "EXCEPTION_FLT_INVALID_OPERATION",
-                0xC0000091: "EXCEPTION_FLT_OVERFLOW",
-                0xC0000032: "EXCEPTION_FLT_STACK_CHECK",
-                0xC0000033: "EXCEPTION_FLT_UNDERFLOW",
-                0x80000001: "EXCEPTION_GUARD_PAGE",
-                0xC000001D: "EXCEPTION_ILLEGAL_INSTRUCTION",
-                0xC0000006: "EXCEPTION_IN_PAGE_ERROR",
-                0xC0000094: "EXCEPTION_INT_DIVIDE_BY_ZERO",
-                0xC0000035: "EXCEPTION_INT_OVERFLOW",
-                0xC00000FD: "EXCEPTION_STACK_OVERFLOW",
-            }
-
             # DBGKM_EXCEPTION64
             ex = substr(buf, 32)
 
@@ -406,8 +224,8 @@ class DebugContext:
             address = unpack("I", substr(ex, 16, 4))
             parameters = unpack("I", substr(ex, 24, 4))
 
-            if code in exceptions:
-                logging.warning("*** %s ", exceptions[code])
+            if code in STATE_CHANGE_EXCEPTIONS:
+                logging.warning("*** %s ", STATE_CHANGE_EXCEPTIONS[code])
             else:
                 logging.warning("*** Exception %08x ", code)
 
