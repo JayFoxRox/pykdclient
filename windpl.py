@@ -267,7 +267,7 @@ class DebugContext:
             logging.debug("Breakpoint %d cleared", handle)
         elif apiNumber == DbgKdGetVersionApi:
             version = substr(buf, 16)
-            logging.debug("VERS: %s", hexformat(version))
+            logging.debug("VERS:\n%s", hexformat(version))
         elif apiNumber == DbgKdReadVirtualMemoryApi:
             vmem = substr(buf, 56)
             logging.debug("VMEM:\n%s", hexasc(vmem))
@@ -276,9 +276,9 @@ class DebugContext:
             logging.debug("PMEM:\n%s", hexasc(pmem))
         elif apiNumber == DbgKdReadControlSpaceApi:
             controlspace = substr(buf, 56)
-            logging.debug("CNTL: %s", hexformat(controlspace))
+            logging.debug("CNTL:\n%s", hexformat(controlspace))
         else:
-            logging.debug("UNKN: %s", hexasc(buf))
+            logging.debug("UNKN:\n%s", hexasc(buf))
 
     def _sendAck(self):
         logging.debug("Acking with next PID: %08x", self.nextpid)

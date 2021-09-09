@@ -10,7 +10,6 @@
 #    `-serial tcp:<sniffer_ip>:<sniffer_port>`
 
 import argparse
-import logging
 import socket
 import socketserver
 import sys
@@ -22,10 +21,21 @@ from util import *
 
 
 class _KDPassthroughSniffer:
-    def __init__(self, name, read_connection, write_connection):
+    def __init__(
+        self, name, read_connection, write_connection, logger_semaphore, start_time
+    ):
         self.name = name
         self.read_connection = read_connection
         self.write_connection = write_connection
+
+        self._logger_semaphore = logger_semaphore
+        self._packet_log = []
+
+        self.start_time = start_time
+
+    @property
+    def elapsed_time_ms(self):
+        return int((time.perf_counter() - self.start_time) * 1000)
 
     def _read(self, wanted):
         """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
@@ -47,61 +57,94 @@ class _KDPassthroughSniffer:
             self.write_connection.sendall(ret)
         return ret
 
-    def read_packet(self):
-        payload = bytearray([])
+    def _log(self, message, *args):
+        """Buffers log messages until a packet is fully processed so the messages can be sent to the logger thread."""
+        self._packet_log.append(message % args)
+
+    def _flush_log(self):
+        with self._logger_semaphore:
+            for line in self._packet_log:
+                print(line)
+            print("")
+
+        self._packet_log = []
+
+    def _read_until_packet_leader(self):
         buf = self._read_and_passthrough(4)
         packet_signature = unpack("I", buf)
 
-        if packet_signature in (PACKET_LEADER, CONTROL_PACKET_LEADER):
-            logging.debug("\n\n[%s]", self.name)
-            logging.debug(
-                "Packet leader: %08x (%s)",
-                packet_signature,
-                "Packet" if packet_signature == PACKET_LEADER else "ControlPacket",
+        discarded_bytes = []
+        now = self.elapsed_time_ms
+
+        while packet_signature not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
+            discarded_bytes += buf[0]
+            buf = buf[1:] + self._read_and_passthrough(1)
+            packet_signature = unpack("I", buf)
+
+        if discarded_bytes:
+            self._log(
+                "[%s] @ %d: Discarded non-KD packet bytes %s",
+                self.name,
+                now,
+                hexformat(discarded_bytes),
+            )
+            self._flush_log()
+
+        return packet_signature
+
+    def read_packet(self):
+        payload = bytearray([])
+
+        packet_signature = self._read_until_packet_leader()
+
+        self._log("[%s] @ %d", self.name, self.elapsed_time_ms)
+        self._log(
+            "Packet leader: %08x (%s)",
+            packet_signature,
+            "Packet" if packet_signature == PACKET_LEADER else "ControlPacket",
+        )
+
+        buf = self._read_and_passthrough(2)
+        packet_type = unpack("H", buf)
+        packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
+        self._log("> Packet type: %d (%s)", packet_type, packet_type_name)
+        if packet_type_name == "<unknown>":
+            self._log("!! Unexpected packet type %04x", packet_type)
+
+        buf = self._read_and_passthrough(2)
+        data_size = unpack("H", buf)
+
+        buf = self._read_and_passthrough(4)
+        packet_id = unpack("I", buf)
+
+        buf = self._read_and_passthrough(4)
+        expected_checksum = unpack("I", buf)
+
+        self._log("> Packet ID: %08x", packet_id)
+        self._log("> Data size: %d", data_size)
+        self._log("> Checksum: %08x", expected_checksum)
+
+        if data_size:
+            payload = self._read_and_passthrough(data_size)
+
+        payload_checksum = generate_checksum(payload)
+        if payload_checksum != expected_checksum:
+            raise Exception(
+                f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}"
             )
 
-            buf = self._read_and_passthrough(2)
-            packet_type = unpack("H", buf)
-            packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
-            logging.debug("> Packet type: %d (%s)", packet_type, packet_type_name)
-            if packet_type_name == "<unknown>":
-                logging.critical("!! Unexpected packet type %04x", packet_type)
+        # send ack if it's a non-control packet
+        if packet_signature == PACKET_LEADER:
+            # packet trailer
+            # self._log("Reading trailer...")
+            trail = self._read_and_passthrough(1)
+            # self._log("Trailer: %x", trail[0])
+            if trail[0] != PACKET_TRAILER:
+                raise Exception("Invalid packet trailer 0x%x" % trail[0])
 
-            buf = self._read_and_passthrough(2)
-            data_size = unpack("H", buf)
+        self._log_packet(packet_type, payload)
 
-            buf = self._read_and_passthrough(4)
-            packet_id = unpack("I", buf)
-
-            buf = self._read_and_passthrough(4)
-            expected_checksum = unpack("I", buf)
-
-            logging.debug("> Packet ID: %08x", packet_id)
-            logging.debug("> Data size: %d", data_size)
-            logging.debug("> Checksum: %08x", expected_checksum)
-
-            if data_size:
-                payload = self._read_and_passthrough(data_size)
-
-            payload_checksum = generate_checksum(payload)
-            if payload_checksum != expected_checksum:
-                raise Exception(
-                    f"!! Checksum invalid. Expected {expected_checksum} but calculated {payload_checksum}"
-                )
-
-            # send ack if it's a non-control packet
-            if packet_signature == PACKET_LEADER:
-                # packet trailer
-                # logging.debug("Reading trailer...")
-                trail = self._read_and_passthrough(1)
-                # logging.debug("Trailer: %x", trail[0])
-                if trail[0] != PACKET_TRAILER:
-                    raise Exception("Invalid packet trailer 0x%x" % trail[0])
-
-            self._log_packet(packet_type, payload)
-        else:
-            logging.warning("Discarding non-KD packet bytes: %08x", packet_signature)
-
+        self._flush_log()
         return True
 
     def _log_packet(self, packet_type, payload):
@@ -110,37 +153,38 @@ class _KDPassthroughSniffer:
         elif packet_type == PACKET_TYPE_KD_STATE_CHANGE64:
             self._log_state_change64(payload)
         elif payload:
-            logging.debug("%s", hexformat(payload))
+            self._log("%s", hexformat(payload))
 
     def _log_state_manipulate(self, payload):
         apiNumber = unpack("I", substr(payload, 0, 4))
-        logging.debug("State Manipulate: %08x", apiNumber)
+        self._log("State Manipulate: %08x", apiNumber)
+        self._log(hexformat(substr(payload, 0, 16)))
 
         if apiNumber == DbgKdWriteBreakPointApi:
             bp = "%08x" % unpack("I", substr(payload, 16, 4))
             handle = unpack("I", substr(payload, 20, 4))
-            logging.debug("Breakpoint %d set at %s", handle, bp)
+            self._log("Breakpoint %d set at %s", handle, bp)
         elif apiNumber == DbgKdRestoreBreakPointApi:
             handle = unpack("I", substr(payload, 16, 4))
-            logging.debug("Breakpoint %d cleared", handle)
+            self._log("Breakpoint %d cleared", handle)
         elif apiNumber == DbgKdGetVersionApi:
             version = substr(payload, 16)
-            logging.debug("VERS: %s", hexformat(version))
+            self._log("VERS: %s", hexformat(version))
         elif apiNumber == DbgKdReadVirtualMemoryApi:
             vmem = substr(payload, 56)
-            logging.debug("VMEM:\n%s", hexasc(vmem))
+            self._log("VMEM:\n%s", hexasc(vmem))
         elif apiNumber == DbgKdReadPhysicalMemoryApi:
             pmem = substr(payload, 56)
-            logging.debug("PMEM:\n%s", hexasc(pmem))
+            self._log("PMEM:\n%s", hexasc(pmem))
         elif apiNumber == DbgKdReadControlSpaceApi:
             controlspace = substr(payload, 56)
-            logging.debug("CNTL: %s", hexformat(controlspace))
+            self._log("CNTL: %s", hexformat(controlspace))
         else:
-            logging.debug("UNKN: %s", hexasc(payload))
+            self._log("UNKN: %s", hexasc(payload))
 
     def _log_state_change64(self, payload):
         newState = unpack("I", substr(payload, 0, 4))
-        logging.debug("State Change: New state: %08x", newState)
+        self._log("State Change: New state: %08x", newState)
 
         if newState == DbgKdExceptionStateChange:
             # DBGKM_EXCEPTION64
@@ -153,16 +197,16 @@ class _KDPassthroughSniffer:
             parameters = unpack("I", substr(ex, 24, 4))
 
             if code in STATE_CHANGE_EXCEPTIONS:
-                logging.warning("*** %s ", STATE_CHANGE_EXCEPTIONS[code])
+                self._log("*** %s ", STATE_CHANGE_EXCEPTIONS[code])
             else:
-                logging.warning("*** Exception %08x ", code)
+                self._log("*** Exception %08x ", code)
 
-            logging.warning("at %08x\n", address)
+            self._log("at %08x\n", address)
 
-            logging.warning("Exception flags = %08x", flags)
-            logging.warning("Exception record = %08x", record)
-            logging.warning("Exception address = %08x", address)
-            logging.warning("Number parameters = %08x", parameters)
+            self._log("Exception flags = %08x", flags)
+            self._log("Exception record = %08x", record)
+            self._log("Exception address = %08x", address)
+            self._log("Number parameters = %08x", parameters)
 
             self.running = False
 
@@ -174,7 +218,7 @@ class _KDPassthroughSniffer:
 
             filename = payload[0x3B8:-1]
             filename = filename.decode("utf-8")
-            logging.debug("Load Symbols for '%s'", filename)
+            self._log("Load Symbols for '%s'", filename)
 
 
 class _DebuggerConnection:
@@ -185,31 +229,54 @@ class _DebuggerConnection:
         self.port = port
         self.debugger_socket = socket.socket()
         self.debugger_socket.connect((host, port))
+        self._running = True
 
-        self.debuggee_semaphore = threading.BoundedSemaphore()
-        self.debuggee = None
+        self._logger_semaphore = threading.BoundedSemaphore()
+        self._debuggee_semaphore = threading.BoundedSemaphore()
+        self._debuggee = None
 
-        self.sniffer = None
+        self.debugger_sniffer = None
+        self.start_time = time.perf_counter()
 
     def register_debuggee(self, handler) -> _KDPassthroughSniffer:
-        with self.debuggee_semaphore:
-            self.debuggee = handler
-            self.sniffer = _KDPassthroughSniffer(
-                "Debugger", self.debugger_socket, handler.connection
+        with self._debuggee_semaphore:
+            self._debuggee = handler
+            self.debugger_sniffer = _KDPassthroughSniffer(
+                "Debugger",
+                self.debugger_socket,
+                handler.connection,
+                self._logger_semaphore,
+                self.start_time,
             )
-        return _KDPassthroughSniffer("Target", handler.connection, self.debugger_socket)
+
+        return _KDPassthroughSniffer(
+            "Target",
+            handler.connection,
+            self.debugger_socket,
+            self._logger_semaphore,
+            self.start_time,
+        )
 
     def unregister_debuggee(self, _handler):
-        with self.debuggee_semaphore:
-            self.debuggee = None
+        with self._debuggee_semaphore:
+            self._debuggee = None
+            self.debugger_sniffer = None
 
     def sendall(self, data, flags=0):
         return self.debugger_socket.sendall(data, flags)
 
+    def stop(self):
+        with self._debuggee_semaphore:
+            self._running = False
+
     def _debugger_thread_main(self):
         while True:
-            with self.debuggee_semaphore:
-                sniffer = self.sniffer
+            with self._debuggee_semaphore:
+                if not self._running:
+                    break
+
+                sniffer = self.debugger_sniffer
+
             if not sniffer:
                 time.sleep(0.100)
                 continue
@@ -240,8 +307,6 @@ class _DebuggeeHandler(socketserver.StreamRequestHandler):
 
 def main(args):
     """Main entrypoint"""
-    logging.basicConfig(level=logging.DEBUG)
-
     print(f"Connecting to debugger at {args.debugger_ip}:{args.debugger_port}")
     debugger_connection = _DebuggerConnection(args.debugger_ip, args.debugger_port)
 
@@ -254,8 +319,13 @@ def main(args):
     debugger_thread = threading.Thread(
         target=_DebuggerConnection._debugger_thread_main, args=(debugger_connection,)
     )
-    debugger_thread.start()
-    server.serve_forever()
+
+    try:
+        debugger_thread.start()
+        server.serve_forever()
+    except KeyboardInterrupt:
+        debugger_connection.stop()
+        raise
 
 
 if __name__ == "__main__":
