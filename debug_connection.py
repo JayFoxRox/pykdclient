@@ -22,8 +22,8 @@ class DebugConnection:
         self._send = None
 
     def connect(self):
-
-        if type(self.endpoint) is tuple:
+        """Connects to the debug endpoint."""
+        if isinstance(self.endpoint, tuple):
             self._connect_socket(self.endpoint)
         else:
             self._connect_fifo(self.endpoint)
@@ -49,8 +49,8 @@ class DebugConnection:
             path_object = pathlib.Path(fifo_path)
             if not path_object.exists():
                 raise Exception(
-                    "Qemu requires two pipes with a common base name and '.in' and '.out' suffixes. "
-                    "E.g., '/tmp/foo.in' and '/tmp/foo.out'."
+                    "Qemu requires two pipes with a common base name and '.in' and "
+                    "'.out' suffixes. E.g., '/tmp/foo.in' and '/tmp/foo.out'."
                 )
 
             if not path_object.is_fifo():
@@ -65,16 +65,13 @@ class DebugConnection:
 
         flags = 0
         if os.name == "nt":
-            flags |= os.O_BINARY
+            flags |= os.O_BINARY  # pylint: disable = no-member
 
         self._connection_write = os.open(write_fifo, flags | os.O_WRONLY)
         self._connection_read = os.open(read_fifo, flags | os.O_RDONLY)
 
         self._recv = self._recv_fifo
         self._send = self._send_fifo
-
-    def disconnect(self):
-        pass
 
     def read_packet(self) -> (kd_packet.KDPacket, bytearray):
         """Reads a single KD packet from the connection."""

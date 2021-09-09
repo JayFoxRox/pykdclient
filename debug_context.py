@@ -40,7 +40,7 @@
 # WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
-# pylint: disable = invalid-name, missing-function-docstring, too-many-instance-attributes, fixme
+# pylint: disable = invalid-name, missing-function-docstring, too-many-instance-attributes, unused-wildcard-import, fixme
 
 import itertools
 import logging
@@ -48,10 +48,10 @@ from struct import pack  # pylint: disable = no-name-in-module
 import sys
 import time
 
-from constants import *
+from constants import *  # pylint: disable = wildcard-import
 from debug_connection import DebugConnection
 import kd_packet
-from util import *
+from util import *  # pylint: disable = wildcard-import
 from windpl_extra import logical2physical
 
 
@@ -86,6 +86,8 @@ class DebugContext:
         self.controlspacesent = False
 
         self.connection = None
+
+        self.last_packet = None
 
     def set_connection(self, connection: DebugConnection) -> None:
         self.connection = connection
@@ -146,29 +148,41 @@ class DebugContext:
 
         if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
             self._handleStateManipulate(buf)
+
         elif ptype == PACKET_TYPE_KD_DEBUG_IO:
             self._handle_debug_io(buf)
+
         elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
             self._handleStateChange(buf)
+
         elif ptype == PACKET_TYPE_KD_RESET:
-            # TODO: check to see if this reset is in response to a reset sent by the debugger script.
-            # If not, dump the read buffer and start over.
-            pass
+            self.next_pid = INITIAL_PACKET_ID | SYNC_PACKET_ID
+            self.remote_pid = INITIAL_PACKET_ID
+
         elif ptype == PACKET_TYPE_KD_RESEND:
             self._resend_packet()
+
         elif len(buf):
-            logging.debug("Ignoring packet")
+            logging.debug(
+                "Ignoring packet of type %d (%s) with payload %s",
+                packet.packet_type,
+                packet.packet_type_name,
+                hexformat(buf),
+            )
 
         return ptype, buf
 
-    def _log_packet(self, packet: kd_packet.KDPacket, read_time: int):
+    def _log_packet(
+        self, packet: kd_packet.KDPacket, read_time: int
+    ):  # pylint: disable = no-self-use
         logging.debug("[%d]\n%s", read_time, "\n".join(packet.get_detailed_log()))
 
         if packet.packet_type_name == "<unknown>":
             logging.critical("!! Unexpected packet type %04x", packet.packet_type)
         if packet.actual_checksum != packet.expected_checksum:
             raise Exception(
-                f"!! Checksum invalid. Expected {packet.expected_checksum} but calculated {packet.actual_checksum}"
+                "!! Checksum invalid. "
+                f"Expected {packet.expected_checksum} but calculated {packet.actual_checksum}"
             )
 
     def _handle_debug_io(self, buf):  # pylint: disable = no-self-use
@@ -236,7 +250,7 @@ class DebugContext:
         self._send_packet(ack_packet)
 
     def _send_packet(self, packet_data):
-        if type(packet_data) is list:
+        if isinstance(packet_data, list):
             packet_data = bytearray(itertools.chain.from_iterable(packet_data))
         self.last_packet = packet_data
         self.connection.write(self.last_packet)
