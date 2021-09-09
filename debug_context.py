@@ -138,6 +138,12 @@ class DebugContext:
 
     def _handlePacket(self):
         """Processes one packet from the connection."""
+
+        # TODO: Handle ack packets properly.
+        # Packets that need an ack should trigger a read & discard loop until
+        # the ack w/ the same packet id is read (or a reset or resend is
+        # encountered). At that point next_pid should be ^= 0x01.
+
         packet = self._receive_packet()
         self._log_packet(packet, self.elapsed_time_ms)
         if packet.needs_ack:
@@ -156,7 +162,7 @@ class DebugContext:
             self._handleStateChange(buf)
 
         elif ptype == PACKET_TYPE_KD_RESET:
-            self.next_pid = INITIAL_PACKET_ID | SYNC_PACKET_ID
+            self.next_pid = INITIAL_PACKET_ID
             self.remote_pid = INITIAL_PACKET_ID
 
         elif ptype == PACKET_TYPE_KD_RESEND:
@@ -258,8 +264,10 @@ class DebugContext:
     def _resend_packet(self):
         if self.last_packet:
             packet = kd_packet.KDPacket.parse(self.last_packet)
+            packet.packet_id = self.next_pid
+            self.next_pid ^= 1
             logging.debug("Resending last packet: %s", "\n".join(packet.basic_log_info))
-            self._send_packet(self.last_packet)
+            self._send_packet(packet.serialize())
         else:
             logging.critical("Resend requested but no packets have been sent!")
 

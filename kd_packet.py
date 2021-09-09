@@ -40,6 +40,8 @@
 # WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
+# pylint: disable=too-many-arguments, too-many-locals
+
 import struct
 
 import constants
@@ -47,6 +49,8 @@ import util
 
 
 class KDPacket:
+    """Models a Kernel Debug packet."""
+
     def __init__(
         self, packet_leader, packet_type, packet_id, expected_checksum, payload
     ):
@@ -58,9 +62,28 @@ class KDPacket:
 
         self.actual_checksum = util.generate_checksum(payload)
 
+    def serialize(self) -> [bytearray]:
+        """Serializes this packet into a byte array (with trailing marker)."""
+        header = struct.pack(
+            "IHHII",
+            self.packet_leader,
+            self.packet_type,
+            len(self.payload),
+            self.packet_id,
+            self.actual_checksum,
+        )
+
+        ret = [header]
+        if self.payload:
+            ret.append(self.payload)
+        if self.needs_ack:
+            ret.append(bytes([constants.PACKET_TRAILER]))
+        return ret
+
     @classmethod
-    def parse(cls, bytes):
-        bytes_len = len(bytes)
+    def parse(cls, buffer):
+        """Constructs a new KDPacket from the given byte buffer."""
+        bytes_len = len(buffer)
         assert bytes_len >= 16
         (
             packet_leader,
@@ -68,13 +91,13 @@ class KDPacket:
             data_size,
             packet_id,
             expected_checksum,
-        ) = struct.unpack("IHHII", bytes[:16])
+        ) = struct.unpack("IHHII", buffer[:16])
 
         if packet_leader == constants.PACKET_LEADER:
-            payload = bytes[16:-1]  # Discard the trailer
+            payload = buffer[16:-1]  # Discard the trailer
             assert bytes_len == (data_size + 17)
         elif bytes_len:
-            payload = bytes[16:]
+            payload = buffer[16:]
             assert bytes_len == (data_size + 16)
         else:
             payload = []
@@ -82,23 +105,27 @@ class KDPacket:
         return cls(packet_leader, packet_type, packet_id, expected_checksum, payload)
 
     @property
-    def packet_group_name(self) -> str:
+    def packet_leader_name(self) -> str:
+        """Returns the symbolic name for the packet leader."""
         if self.packet_leader == constants.PACKET_LEADER:
             return "Packet"
         return "ControlPacket"
 
     @property
     def packet_type_name(self) -> str:
+        """Returns the symbolic name for the packet type."""
         return constants.PACKET_TYPE_TABLE.get(self.packet_type, "<unknown>")
 
     @property
     def needs_ack(self) -> bool:
+        """Indicates whether an ack should be expected for this packet."""
         return self.packet_leader == constants.PACKET_LEADER
 
     @property
     def basic_log_info(self) -> [str]:
+        """Returns general/common logging information about this packet."""
         return [
-            "Packet leader: %08x (%s)" % (self.packet_leader, self.packet_group_name),
+            "Packet leader: %08x (%s)" % (self.packet_leader, self.packet_leader_name),
             "  Type: %d (%s)" % (self.packet_type, self.packet_type_name),
             "  ID: %08x" % self.packet_id,
             "  Data size: %d" % len(self.payload),
@@ -121,13 +148,16 @@ class KDPacket:
         return ret
 
     def _log_state_manipulate(self) -> []:
-        apiNumber, processor_level, processor, return_status = struct.unpack(
+        api_number, processor_level, processor, return_status = struct.unpack(
             "IHHI", self.payload[:12]
         )
 
         ret = [
             "State Manipulate: %08x (%s)"
-            % (apiNumber, constants.STATE_MANIPULATE_TABLE.get(apiNumber, "<unknown>")),
+            % (
+                api_number,
+                constants.STATE_MANIPULATE_TABLE.get(api_number, "<unknown>"),
+            ),
             "Processor level: %04x" % processor_level,
             "Processor: %04x" % processor,
             "Return status: %08x" % return_status,
@@ -135,26 +165,26 @@ class KDPacket:
 
         # self._log(hexformat(substr(payload, 0, 16)))
 
-        if apiNumber == constants.DbgKdWriteBreakPointApi:
-            bp, handle = struct.unpack("II", self.payload[16:24])
-            ret.append("Breakpoint %d set at 0x%08x" % (handle, bp))
+        if api_number == constants.DbgKdWriteBreakPointApi:
+            breakpoint, handle = struct.unpack("II", self.payload[16:24])
+            ret.append("Breakpoint %d set at 0x%08x" % (handle, breakpoint))
 
-        elif apiNumber == constants.DbgKdRestoreBreakPointApi:
+        elif api_number == constants.DbgKdRestoreBreakPointApi:
             handle = struct.unpack("I", self.payload[16:20])[0]
             ret.append("Breakpoint %d (0x%08x) cleared" % (handle, handle))
 
-        elif apiNumber == constants.DbgKdGetVersionApi:
+        elif api_number == constants.DbgKdGetVersionApi:
             ret.extend(self._log_version(self.payload[16:]))
 
-        elif apiNumber == constants.DbgKdReadVirtualMemoryApi:
+        elif api_number == constants.DbgKdReadVirtualMemoryApi:
             vmem = self.payload[56:]
             ret.append("VMEM:\n%s" % util.hexasc(vmem))
 
-        elif apiNumber == constants.DbgKdReadPhysicalMemoryApi:
+        elif api_number == constants.DbgKdReadPhysicalMemoryApi:
             pmem = self.payload[56:]
             ret.append("PMEM:\n%s" % util.hexasc(pmem))
 
-        elif apiNumber == constants.DbgKdReadControlSpaceApi:
+        elif api_number == constants.DbgKdReadControlSpaceApi:
             controlspace = self.payload[56:]
             ret.append("CNTL: %s" % util.hexformat(controlspace))
 
@@ -164,7 +194,8 @@ class KDPacket:
         ret.extend(["\nRaw payload:\n", util.hexformat(self.payload)])
         return ret
 
-    def _log_version(self, version_payload) -> [str]:
+    @staticmethod
+    def _log_version(version_payload) -> [str]:
         assert len(version_payload) == 40
         (
             major_version,
