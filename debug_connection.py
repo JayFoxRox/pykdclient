@@ -63,12 +63,12 @@ class DebugConnection:
         require_fifo_exists(write_fifo)
         require_fifo_exists(read_fifo)
 
-        flags = os.O_RDWR
+        flags = 0
         if os.name == "nt":
             flags |= os.O_BINARY
 
-        self._connection_write = os.open(write_fifo, flags)
-        self._connection_read = os.open(read_fifo, flags)
+        self._connection_write = os.open(write_fifo, flags | os.O_WRONLY)
+        self._connection_read = os.open(read_fifo, flags | os.O_RDONLY)
 
         self._recv = self._recv_fifo
         self._send = self._send_fifo

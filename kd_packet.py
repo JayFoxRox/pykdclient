@@ -58,6 +58,29 @@ class KDPacket:
 
         self.actual_checksum = util.generate_checksum(payload)
 
+    @classmethod
+    def parse(cls, bytes):
+        bytes_len = len(bytes)
+        assert bytes_len >= 16
+        (
+            packet_leader,
+            packet_type,
+            data_size,
+            packet_id,
+            expected_checksum,
+        ) = struct.unpack("IHHII", bytes[:16])
+
+        if packet_leader == constants.PACKET_LEADER:
+            payload = bytes[16:-1]  # Discard the trailer
+            assert bytes_len == (data_size + 17)
+        elif bytes_len:
+            payload = bytes[16:]
+            assert bytes_len == (data_size + 16)
+        else:
+            payload = []
+
+        return cls(packet_leader, packet_type, packet_id, expected_checksum, payload)
+
     @property
     def packet_group_name(self) -> str:
         if self.packet_leader == constants.PACKET_LEADER:
@@ -75,8 +98,7 @@ class KDPacket:
     @property
     def basic_log_info(self) -> [str]:
         return [
-            "Got packet leader: %08x (%s)"
-            % (self.packet_leader, self.packet_group_name),
+            "Packet leader: %08x (%s)" % (self.packet_leader, self.packet_group_name),
             "  Type: %d (%s)" % (self.packet_type, self.packet_type_name),
             "  ID: %08x" % self.packet_id,
             "  Data size: %d" % len(self.payload),
@@ -229,21 +251,28 @@ class KDPacket:
     def _log_load_symbols_state_change(self, data):
         ret = []
 
-        pathname_length, dll_base, process_id, checksum, image_size, unload = struct.unpack(
-            "IQQIII", data[:36]
+        (
+            pathname_length,
+            dll_base,
+            process_id,
+            checksum,
+            image_size,
+            unload,
+        ) = struct.unpack("IQQIIB", data[:33])
+        ret.extend(
+            [
+                "Path name length: %d" % pathname_length,
+                "DLL Base addr: %016x" % dll_base,
+                "Process ID: %016x" % process_id,
+                "Checksum: %d (%08x)" % (checksum, checksum),
+                "Image size: %d" % image_size,
+                "Unload?: %d" % unload,
+            ]
         )
-        ret.extend([
-            "Path name length: %d" % pathname_length,
-            "DLL Base addr: %016x" % dll_base,
-            "Process ID: %016x" % process_id,
-            "Checksum: %d (%08x)" % (checksum, checksum),
-            "Image size: %d" % image_size,
-            "Unload?: %d" % unload
-        ])
 
         filename = self.payload[0x3B8:-1]  # Ignore the null terminator
         filename = filename.decode("utf-8")
         ret.append("Load Symbols for '%s'" % filename)
-        #ret.append("Remaining payload:\n%s" % util.hexformat(data[32:]))
+        # ret.append("Remaining payload:\n%s" % util.hexformat(data[32:]))
 
         return ret
