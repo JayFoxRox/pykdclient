@@ -149,7 +149,7 @@ class DebugContext:
         packet_type = None
         payload = bytearray([])
         buf = self.client._read_and_passthrough(4)
-        packet_signature = unpack("I", buf)
+        packet_signature = unpack_one("I", buf)
         if packet_signature in (PACKET_LEADER, CONTROL_PACKET_LEADER):
             logging.debug(
                 "[%d] Got packet leader: %08x (%s)",
@@ -159,21 +159,21 @@ class DebugContext:
             )
 
             buf = self.client._read_and_passthrough(2)
-            packet_type = unpack("H", buf)
+            packet_type = unpack_one("H", buf)
             packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
             logging.debug("> Packet type: %d (%s)", packet_type, packet_type_name)
             if packet_type_name == "<unknown>":
                 logging.critical("!! Unexpected packet type %04x", packet_type)
 
             buf = self.client._read_and_passthrough(2)
-            data_size = unpack("H", buf)
+            data_size = unpack_one("H", buf)
 
             buf = self.client._read_and_passthrough(4)
-            packet_id = unpack("I", buf)
+            packet_id = unpack_one("I", buf)
             self.nextpid = packet_id
 
             buf = self.client._read_and_passthrough(4)
-            expected_checksum = unpack("I", buf)
+            expected_checksum = unpack_one("I", buf)
 
             logging.debug("> Packet ID: %08x", packet_id)
             logging.debug("> Data size: %d", data_size)
@@ -204,25 +204,25 @@ class DebugContext:
         return packet_type, payload
 
     def _handleDebugIO(self, buf):  # pylint: disable = no-self-use
-        apiNumber = unpack("I", substr(buf, 0, 4))
+        apiNumber = unpack_one("I", substr(buf, 0, 4))
         if apiNumber == DbgKdPrintStringApi:
             print("DbgPrint: " + substr(buf, 0x10).decode("utf-8"))
         else:
             logging.debug("Ignoring debug IO packet with API number %d", apiNumber)
 
     def _handleStateChange(self, buf):
-        newState = unpack("I", substr(buf, 0, 4))
+        newState = unpack_one("I", substr(buf, 0, 4))
         logging.debug("State Change: New state: %08x", newState)
 
         if newState == DbgKdExceptionStateChange:
             # DBGKM_EXCEPTION64
             ex = substr(buf, 32)
 
-            code = unpack("I", substr(ex, 0, 4))
-            flags = unpack("I", substr(ex, 4, 4))
-            record = unpack("I", substr(ex, 8, 4))
-            address = unpack("I", substr(ex, 16, 4))
-            parameters = unpack("I", substr(ex, 24, 4))
+            code = unpack_one("I", substr(ex, 0, 4))
+            flags = unpack_one("I", substr(ex, 4, 4))
+            record = unpack_one("I", substr(ex, 8, 4))
+            address = unpack_one("I", substr(ex, 16, 4))
+            parameters = unpack_one("I", substr(ex, 24, 4))
 
             if code in STATE_CHANGE_EXCEPTIONS:
                 logging.warning("*** %s ", STATE_CHANGE_EXCEPTIONS[code])
@@ -254,16 +254,16 @@ class DebugContext:
 
     def _handleStateManipulate(self, buf):
 
-        apiNumber = unpack("I", substr(buf, 0, 4))
+        apiNumber = unpack_one("I", substr(buf, 0, 4))
         logging.debug("State Manipulate: %08x", apiNumber)
 
         if apiNumber == DbgKdWriteBreakPointApi:
-            bp = "%08x" % unpack("I", substr(buf, 16, 4))
-            handle = unpack("I", substr(buf, 20, 4))
+            bp = "%08x" % unpack_one("I", substr(buf, 16, 4))
+            handle = unpack_one("I", substr(buf, 20, 4))
             logging.debug("Breakpoint %d set at %s", handle, bp)
             self.breakpoints[bp] = handle
         elif apiNumber == DbgKdRestoreBreakPointApi:
-            handle = unpack("I", substr(buf, 16, 4))
+            handle = unpack_one("I", substr(buf, 16, 4))
             logging.debug("Breakpoint %d cleared", handle)
         elif apiNumber == DbgKdGetVersionApi:
             version = substr(buf, 16)
@@ -313,38 +313,38 @@ class DebugContext:
         ctx = buf[56:]
 
         # print("CTXT: ", hexformat($context)
-        context["ContextFlags"] = unpack("I", ctx[0:4])
-        context["DR0"] = unpack("I", ctx[4:8])
-        context["DR1"] = unpack("I", ctx[8 : 8 + 4])
-        context["DR2"] = unpack("I", ctx[12 : 12 + 4])
-        context["DR3"] = unpack("I", ctx[16 : 16 + 4])
-        context["DR6"] = unpack("I", ctx[20 : 20 + 4])
-        context["DR7"] = unpack("I", ctx[24 : 24 + 4])
-        context["fp.ControlWord"] = unpack("I", ctx[28 : 28 + 4])
-        context["fp.StatusWord"] = unpack("I", ctx[32 : 32 + 4])
-        context["fp.TagWord"] = unpack("I", ctx[36 : 36 + 4])
-        context["fp.ErrorOffset"] = unpack("I", ctx[40 : 40 + 4])
-        context["fp.ErrorSelector"] = unpack("I", ctx[44 : 44 + 4])
-        context["fp.DataOffset"] = unpack("I", ctx[48 : 48 + 4])
-        context["fp.DataSelector"] = unpack("I", ctx[52 : 52 + 4])
+        context["ContextFlags"] = unpack_one("I", ctx[0:4])
+        context["DR0"] = unpack_one("I", ctx[4:8])
+        context["DR1"] = unpack_one("I", ctx[8: 8 + 4])
+        context["DR2"] = unpack_one("I", ctx[12: 12 + 4])
+        context["DR3"] = unpack_one("I", ctx[16: 16 + 4])
+        context["DR6"] = unpack_one("I", ctx[20: 20 + 4])
+        context["DR7"] = unpack_one("I", ctx[24: 24 + 4])
+        context["fp.ControlWord"] = unpack_one("I", ctx[28: 28 + 4])
+        context["fp.StatusWord"] = unpack_one("I", ctx[32: 32 + 4])
+        context["fp.TagWord"] = unpack_one("I", ctx[36: 36 + 4])
+        context["fp.ErrorOffset"] = unpack_one("I", ctx[40: 40 + 4])
+        context["fp.ErrorSelector"] = unpack_one("I", ctx[44: 44 + 4])
+        context["fp.DataOffset"] = unpack_one("I", ctx[48: 48 + 4])
+        context["fp.DataSelector"] = unpack_one("I", ctx[52: 52 + 4])
         context["fp.RegisterArea"] = ctx[56 : 56 + 80]
-        context["fp.Cr0NpxState"] = unpack("I", ctx[136 : 136 + 4])
-        context["GS"] = unpack("I", ctx[140 : 140 + 4])
-        context["FS"] = unpack("I", ctx[144 : 144 + 4])
-        context["ES"] = unpack("I", ctx[148 : 148 + 4])
-        context["DS"] = unpack("I", ctx[152 : 152 + 4])
-        context["EDI"] = unpack("I", ctx[156 : 156 + 4])
-        context["ESI"] = unpack("I", ctx[160 : 160 + 4])
-        context["EBX"] = unpack("I", ctx[164 : 164 + 4])
-        context["EDX"] = unpack("I", ctx[168 : 168 + 4])
-        context["ECX"] = unpack("I", ctx[172 : 172 + 4])
-        context["EAX"] = unpack("I", ctx[176 : 176 + 4])
-        context["EBP"] = unpack("I", ctx[180 : 180 + 4])
-        context["EIP"] = unpack("I", ctx[184:188])
-        context["CS"] = unpack("I", ctx[188:192])
-        context["Eflags"] = unpack("I", ctx[192:196])
-        context["ESP"] = unpack("I", ctx[196:200])
-        context["SS"] = unpack("I", ctx[200:204])
+        context["fp.Cr0NpxState"] = unpack_one("I", ctx[136: 136 + 4])
+        context["GS"] = unpack_one("I", ctx[140: 140 + 4])
+        context["FS"] = unpack_one("I", ctx[144: 144 + 4])
+        context["ES"] = unpack_one("I", ctx[148: 148 + 4])
+        context["DS"] = unpack_one("I", ctx[152: 152 + 4])
+        context["EDI"] = unpack_one("I", ctx[156: 156 + 4])
+        context["ESI"] = unpack_one("I", ctx[160: 160 + 4])
+        context["EBX"] = unpack_one("I", ctx[164: 164 + 4])
+        context["EDX"] = unpack_one("I", ctx[168: 168 + 4])
+        context["ECX"] = unpack_one("I", ctx[172: 172 + 4])
+        context["EAX"] = unpack_one("I", ctx[176: 176 + 4])
+        context["EBP"] = unpack_one("I", ctx[180: 180 + 4])
+        context["EIP"] = unpack_one("I", ctx[184:188])
+        context["CS"] = unpack_one("I", ctx[188:192])
+        context["Eflags"] = unpack_one("I", ctx[192:196])
+        context["ESP"] = unpack_one("I", ctx[196:200])
+        context["SS"] = unpack_one("I", ctx[200:204])
         context["leftovers"] = ctx[204:]
         return context
 
@@ -392,12 +392,12 @@ class DebugContext:
         buf = self._waitStateManipulate(DbgKdGetVersionApi)
         if len(buf) > 32:
             v = substr(buf, 16)
-            osv = "%d.%d" % (unpack("H", substr(v, 4, 2)), unpack("H", substr(v, 6, 2)))
-            pv = unpack("H", substr(v, 8, 2))
-            machinetype = unpack("H", substr(v, 12, 2))
-            kernbase = unpack("I", substr(v, 16, 4))
-            modlist = unpack("I", substr(v, 24, 4))
-            ddata = unpack("I", substr(v, 32, 4))
+            osv = "%d.%d" % (unpack_one("H", substr(v, 4, 2)), unpack_one("H", substr(v, 6, 2)))
+            pv = unpack_one("H", substr(v, 8, 2))
+            machinetype = unpack_one("H", substr(v, 12, 2))
+            kernbase = unpack_one("I", substr(v, 16, 4))
+            modlist = unpack_one("I", substr(v, 24, 4))
+            ddata = unpack_one("I", substr(v, 32, 4))
             if pv < 5:
                 logging.critical("Debug protocol version %d not supported", pv)
                 sys.exit()
@@ -612,7 +612,7 @@ class DebugContext:
         # print("Reading dword at %08x\n", addr
         buf = self._readVirtualMemory(addr, 4)
         if len(buf) == 4:
-            return unpack("I", buf)
+            return unpack_one("I", buf)
         return "failed"
 
     def _readPhysicalMemory(self, addr, length):
@@ -759,7 +759,7 @@ class DebugContext:
         while 1:
             ptype, buf = self._handlePacket()
             if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
-                api = unpack("I", substr(buf, 0, 4))
+                api = unpack_one("I", substr(buf, 0, 4))
                 if api == wanted:
                     break
         # except timeout:
@@ -772,7 +772,7 @@ class DebugContext:
         self.pcontext = self.kernelcontext  # this procedure is kernel context only
         self._sendDbgKdGetVersion()
         buf = self._waitStateManipulate(DbgKdGetVersionApi)
-        pddata = unpack("I", substr(buf, 48, 4))
+        pddata = unpack_one("I", substr(buf, 48, 4))
         if pddata:
             # print("Pointer to debugger data struct is at %08x\n", pddata
             ddata = self._readDword(pddata)

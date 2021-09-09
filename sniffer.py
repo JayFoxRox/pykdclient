@@ -71,7 +71,7 @@ class _KDPassthroughSniffer:
 
     def _read_until_packet_leader(self):
         buf = self._read_and_passthrough(4)
-        packet_signature = unpack("I", buf)
+        packet_signature = unpack_one("I", buf)
 
         discarded_bytes = []
         now = self.elapsed_time_ms
@@ -79,7 +79,7 @@ class _KDPassthroughSniffer:
         while packet_signature not in (PACKET_LEADER, CONTROL_PACKET_LEADER):
             discarded_bytes.append(buf[0])
             buf = buf[1:] + self._read_and_passthrough(1)
-            packet_signature = unpack("I", buf)
+            packet_signature = unpack_one("I", buf)
 
         if discarded_bytes:
             self._log(
@@ -105,20 +105,20 @@ class _KDPassthroughSniffer:
         )
 
         buf = self._read_and_passthrough(2)
-        packet_type = unpack("H", buf)
+        packet_type = unpack_one("H", buf)
         packet_type_name = PACKET_TYPE_TABLE.get(packet_type, "<unknown>")
         self._log("> Packet type: %d (%s)", packet_type, packet_type_name)
         if packet_type_name == "<unknown>":
             self._log("!! Unexpected packet type %04x", packet_type)
 
         buf = self._read_and_passthrough(2)
-        data_size = unpack("H", buf)
+        data_size = unpack_one("H", buf)
 
         buf = self._read_and_passthrough(4)
-        packet_id = unpack("I", buf)
+        packet_id = unpack_one("I", buf)
 
         buf = self._read_and_passthrough(4)
-        expected_checksum = unpack("I", buf)
+        expected_checksum = unpack_one("I", buf)
 
         self._log("> Packet ID: %08x", packet_id)
         self._log("> Data size: %d", data_size)
@@ -156,44 +156,49 @@ class _KDPassthroughSniffer:
             self._log("%s", hexformat(payload))
 
     def _log_state_manipulate(self, payload):
-        apiNumber = unpack("I", substr(payload, 0, 4))
+        apiNumber = unpack_one("I", substr(payload, 0, 4))
         self._log(
             "State Manipulate: %08x (%s)",
             apiNumber,
             STATE_MANIPULATE_TABLE.get(apiNumber, "<unknown>"),
         )
 
-        processor_level = unpack("H", substr(payload, 4, 2))
-        processor = unpack("H", substr(payload, 6, 2))
-        return_status = unpack("I", substr(payload, 8, 4))
+        processor_level = unpack_one("H", substr(payload, 4, 2))
+        processor = unpack_one("H", substr(payload, 6, 2))
+        return_status = unpack_one("I", substr(payload, 8, 4))
 
         # self._log(hexformat(substr(payload, 0, 16)))
         self._log(hexformat(payload))
 
         if apiNumber == DbgKdWriteBreakPointApi:
-            bp = "%08x" % unpack("I", substr(payload, 16, 4))
-            handle = unpack("I", substr(payload, 20, 4))
+            bp = "%08x" % unpack_one("I", substr(payload, 16, 4))
+            handle = unpack_one("I", substr(payload, 20, 4))
             self._log("Breakpoint %d set at %s", handle, bp)
+
         elif apiNumber == DbgKdRestoreBreakPointApi:
-            handle = unpack("I", substr(payload, 16, 4))
+            handle = unpack_one("I", substr(payload, 16, 4))
             self._log("Breakpoint %d cleared", handle)
+
         elif apiNumber == DbgKdGetVersionApi:
-            version = substr(payload, 16)
-            self._log("VERS: %s", hexformat(version))
-            self._log_version(payload[12:])
+            self._log_version(payload[16:])
+
         elif apiNumber == DbgKdReadVirtualMemoryApi:
             vmem = substr(payload, 56)
             self._log("VMEM:\n%s", hexasc(vmem))
+
         elif apiNumber == DbgKdReadPhysicalMemoryApi:
             pmem = substr(payload, 56)
             self._log("PMEM:\n%s", hexasc(pmem))
+
         elif apiNumber == DbgKdReadControlSpaceApi:
             controlspace = substr(payload, 56)
             self._log("CNTL: %s", hexformat(controlspace))
+
         else:
             self._log("UNKN: %s", hexasc(payload))
 
     def _log_version(self, payload):
+        assert(len(payload) == 40)
         (
             major_version,
             minor_version,
@@ -209,7 +214,7 @@ class _KDPassthroughSniffer:
             kern_base,
             ps_loaded_module_list,
             debugger_data_list,
-        ) = unpack("HHBBHHBBBBHQQQ", payload)
+        ) = struct.unpack("HHBBHHBBBBHQQQ", payload)
         self._log("Version: %d.%d", major_version, minor_version)
         self._log("Protocol version: %d", protocol_version)
         self._log("KD secondary version: %d", kd_secondary_version)
@@ -223,10 +228,8 @@ class _KDPassthroughSniffer:
         self._log("PS loaded module list: %x", ps_loaded_module_list)
         self._log("Debugger data list: %x", debugger_data_list)
 
-        print(f"{len(payload)} should == 40")
-
     def _log_state_change64(self, payload):
-        new_state = unpack("I", substr(payload, 0, 4))
+        new_state = unpack_one("I", substr(payload, 0, 4))
         self._log(
             "State Change: New state: %08x (%s)",
             new_state,
@@ -238,11 +241,11 @@ class _KDPassthroughSniffer:
             # DBGKM_EXCEPTION64
             ex = substr(payload, 32)
 
-            code = unpack("I", substr(ex, 0, 4))
-            flags = unpack("I", substr(ex, 4, 4))
-            record = unpack("I", substr(ex, 8, 4))
-            address = unpack("I", substr(ex, 16, 4))
-            parameters = unpack("I", substr(ex, 24, 4))
+            code = unpack_one("I", substr(ex, 0, 4))
+            flags = unpack_one("I", substr(ex, 4, 4))
+            record = unpack_one("I", substr(ex, 8, 4))
+            address = unpack_one("I", substr(ex, 16, 4))
+            parameters = unpack_one("I", substr(ex, 24, 4))
 
             if code in STATE_CHANGE_EXCEPTIONS:
                 self._log("*** %s ", STATE_CHANGE_EXCEPTIONS[code])

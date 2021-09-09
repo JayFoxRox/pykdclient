@@ -56,7 +56,8 @@ def patch_substr(buf, start, length, fmt, data=None):
     return buf[0:start] + struct.pack(fmt, data) + buf[start + length :]
 
 
-def unpack(fmt, data):
+def unpack_one(fmt, data):
+    assert(len(fmt) == 1)
     return struct.unpack(fmt, data)[0]  # pylint: disable = no-member
 
 
