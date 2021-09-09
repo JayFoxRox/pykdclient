@@ -116,6 +116,7 @@ class DebugContext:
                 now,
                 hexformat(discarded_bytes),
             )
+        self.nextpid = packet.packet_id
         if packet.needs_ack:
             self._sendAck()
         return packet
@@ -146,7 +147,7 @@ class DebugContext:
         return ptype, buf
 
     def _log_packet(self, packet: kd_packet.KDPacket, read_time: int):
-        logging.debug("[%d]\n%s", read_time, "\n".join(packet.basic_log_info))
+        logging.debug("[%d]\n%s", read_time, "\n".join(packet.get_detailed_log()))
 
         if packet.packet_type_name == "<unknown>":
             logging.critical("!! Unexpected packet type %04x", packet.packet_type)
@@ -164,73 +165,23 @@ class DebugContext:
 
     def _handleStateChange(self, buf):
         newState = unpack_one("I", substr(buf, 0, 4))
-        logging.debug("State Change: New state: %08x", newState)
 
         if newState == DbgKdExceptionStateChange:
             # DBGKM_EXCEPTION64
-            ex = substr(buf, 32)
-
-            code = unpack_one("I", substr(ex, 0, 4))
-            flags = unpack_one("I", substr(ex, 4, 4))
-            record = unpack_one("I", substr(ex, 8, 4))
-            address = unpack_one("I", substr(ex, 16, 4))
-            parameters = unpack_one("I", substr(ex, 24, 4))
-
-            if code in STATE_CHANGE_EXCEPTIONS:
-                logging.warning("*** %s ", STATE_CHANGE_EXCEPTIONS[code])
-            else:
-                logging.warning("*** Exception %08x ", code)
-
-            logging.warning("at %08x\n", address)
-
-            logging.warning("Exception flags = %08x", flags)
-            logging.warning("Exception record = %08x", record)
-            logging.warning("Exception address = %08x", address)
-            logging.warning("Number parameters = %08x", parameters)
-
             self.running = False
-
-            # my @v = getVersionInfo()
-            # version  = v[0]
-            # $kernelbase = v[2]
         elif newState == DbgKdLoadSymbolsStateChange:
             # DBGKD_LOAD_SYMBOLS64
-
-            filename = buf[0x3B8:-1]
-            filename = filename.decode("utf-8")
-            logging.debug("Load Symbols for '%s'", filename)
-
             # nothing to do...
 
             self._sendDbgKdContinue2()
 
     def _handleStateManipulate(self, buf):
-
         apiNumber = unpack_one("I", substr(buf, 0, 4))
-        logging.debug("State Manipulate: %08x", apiNumber)
 
         if apiNumber == DbgKdWriteBreakPointApi:
             bp = "%08x" % unpack_one("I", substr(buf, 16, 4))
             handle = unpack_one("I", substr(buf, 20, 4))
-            logging.debug("Breakpoint %d set at %s", handle, bp)
             self.breakpoints[bp] = handle
-        elif apiNumber == DbgKdRestoreBreakPointApi:
-            handle = unpack_one("I", substr(buf, 16, 4))
-            logging.debug("Breakpoint %d cleared", handle)
-        elif apiNumber == DbgKdGetVersionApi:
-            version = substr(buf, 16)
-            logging.debug("VERS:\n%s", hexformat(version))
-        elif apiNumber == DbgKdReadVirtualMemoryApi:
-            vmem = substr(buf, 56)
-            logging.debug("VMEM:\n%s", hexasc(vmem))
-        elif apiNumber == DbgKdReadPhysicalMemoryApi:
-            pmem = substr(buf, 56)
-            logging.debug("PMEM:\n%s", hexasc(pmem))
-        elif apiNumber == DbgKdReadControlSpaceApi:
-            controlspace = substr(buf, 56)
-            logging.debug("CNTL:\n%s", hexformat(controlspace))
-        else:
-            logging.debug("UNKN:\n%s", hexasc(buf))
 
     def _sendAck(self):
         logging.debug("Acking with next PID: %08x", self.nextpid)

@@ -244,9 +244,6 @@ class KDPacket:
         filename = self.payload[0x3B8:-1]  # Ignore the null terminator
         filename = filename.decode("utf-8")
         ret.append("Load Symbols for '%s'" % filename)
-        ret.append("Remaining payload:\n%s" % util.hexformat(data[32:]))
-
-        ret.append("\n\nRaw payload:\n")
-        ret.append(util.hexformat(self.payload))
+        #ret.append("Remaining payload:\n%s" % util.hexformat(data[32:]))
 
         return ret
