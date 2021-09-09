@@ -222,14 +222,31 @@ class KDPacket:
             )
 
         elif new_state == constants.DbgKdLoadSymbolsStateChange:
-            ret.extend(self._log_load_symbols_state_change())
-            # DBGKD_LOAD_SYMBOLS64
+            ret.extend(self._log_load_symbols_state_change(self.payload[32:]))
 
-            filename = self.payload[0x3B8:-1]
-            filename = filename.decode("utf-8")
-            ret.append("Load Symbols for '%s'" % filename)
+        return ret
 
-            ret.append("\n\nRaw payload:\n")
-            ret.append(util.hexformat(self.payload))
+    def _log_load_symbols_state_change(self, data):
+        ret = []
+
+        pathname_length, dll_base, process_id, checksum, image_size, unload = struct.unpack(
+            "IQQIII", data[:36]
+        )
+        ret.extend([
+            "Path name length: %d" % pathname_length,
+            "DLL Base addr: %016x" % dll_base,
+            "Process ID: %016x" % process_id,
+            "Checksum: %d (%08x)" % (checksum, checksum),
+            "Image size: %d" % image_size,
+            "Unload?: %d" % unload
+        ])
+
+        filename = self.payload[0x3B8:-1]  # Ignore the null terminator
+        filename = filename.decode("utf-8")
+        ret.append("Load Symbols for '%s'" % filename)
+        ret.append("Remaining payload:\n%s" % util.hexformat(data[32:]))
+
+        ret.append("\n\nRaw payload:\n")
+        ret.append(util.hexformat(self.payload))
 
         return ret
