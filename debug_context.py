@@ -147,7 +147,7 @@ class DebugContext:
         if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
             self._handleStateManipulate(buf)
         elif ptype == PACKET_TYPE_KD_DEBUG_IO:
-            self._handleDebugIO(buf)
+            self._handle_debug_io(buf)
         elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
             self._handleStateChange(buf)
         elif ptype == PACKET_TYPE_KD_RESET:
@@ -171,12 +171,28 @@ class DebugContext:
                 f"!! Checksum invalid. Expected {packet.expected_checksum} but calculated {packet.actual_checksum}"
             )
 
-    def _handleDebugIO(self, buf):  # pylint: disable = no-self-use
-        apiNumber = unpack_one("I", substr(buf, 0, 4))
-        if apiNumber == DbgKdPrintStringApi:
+    def _handle_debug_io(self, buf):  # pylint: disable = no-self-use
+        api_number, _processor_level, _processor = struct.unpack("IHH", buf[:8])
+
+        if api_number == DbgKdPrintStringApi:
+            string_len = struct.unpack("I", buf[8:12])[0]
+            payload = buf[16:]
+            if len(payload) != string_len:
+                logging.critical(
+                    "Expected debug string of length %d but have %d",
+                    string_len,
+                    len(payload),
+                )
             print("DbgPrint: " + substr(buf, 0x10).decode("utf-8"))
+        elif api_number == DbgKdGetStringApi:
+            prompt_len, string_len = struct.unpack("II", buf[8:16])
+            logging.debug(
+                "Ignoring unimplemented Get String api. Prompt %d, String %d",
+                prompt_len,
+                string_len,
+            )
         else:
-            logging.debug("Ignoring debug IO packet with API number %d", apiNumber)
+            logging.debug("Ignoring debug IO packet with API number %d", api_number)
 
     def _handleStateChange(self, buf):
         newState = unpack_one("I", substr(buf, 0, 4))
