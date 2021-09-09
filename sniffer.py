@@ -194,21 +194,36 @@ class _KDPassthroughSniffer:
             self._log("UNKN: %s", hexasc(payload))
 
     def _log_version(self, payload):
-        # USHORT MajorVersion;
-        # USHORT MinorVersion;
-        # UCHAR ProtocolVersion;
-        # UCHAR KdSecondaryVersion;
-        # USHORT Flags;
-        # USHORT MachineType;
-        # UCHAR MaxPacketType;
-        # UCHAR MaxStateChange;
-        # UCHAR MaxManipulate;
-        # UCHAR Simulation;
-        # USHORT Unused[1];
-        # ULONG64 KernBase;
-        # ULONG64 PsLoadedModuleList;
-        # ULONG64 DebuggerDataList;
-        pass
+        (
+            major_version,
+            minor_version,
+            protocol_version,
+            kd_secondary_version,
+            flags,
+            machine_type,
+            max_packet_type,
+            max_state_change,
+            max_manipulate,
+            simulation,
+            _unused,
+            kern_base,
+            ps_loaded_module_list,
+            debugger_data_list,
+        ) = unpack("HHBBHHBBBBHQQQ", payload)
+        self._log("Version: %d.%d", major_version, minor_version)
+        self._log("Protocol version: %d", protocol_version)
+        self._log("KD secondary version: %d", kd_secondary_version)
+        self._log("Flags: 0x%04x", flags)
+        self._log("Machine type: %d (0x%04x)", machine_type, machine_type)
+        self._log("Max packet type: %d", max_packet_type)
+        self._log("Max state change: %d", max_state_change)
+        self._log("Max manipulate: %d", max_manipulate)
+        self._log("Simulation: 0x%02x", simulation)
+        self._log("Kernel base: %x", kern_base)
+        self._log("PS loaded module list: %x", ps_loaded_module_list)
+        self._log("Debugger data list: %x", debugger_data_list)
+
+        print(f"{len(payload)} should == 40")
 
     def _log_state_change64(self, payload):
         new_state = unpack("I", substr(payload, 0, 4))
