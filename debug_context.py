@@ -75,7 +75,10 @@ class DebugContext:
         self.processcontext["eprocess"] = 0
         self.processcontext["dtb"] = 0
         self.pcontext = self.kernelcontext
-        self.nextpid = INITIAL_PACKET_ID
+
+        self.remote_pid = INITIAL_PACKET_ID
+        self.next_pid = INITIAL_PACKET_ID | SYNC_PACKET_ID
+
         self.breakpoints = {}
 
         self.curbp = 1
@@ -117,7 +120,18 @@ class DebugContext:
                 now,
                 hexformat(discarded_bytes),
             )
-        self.nextpid = packet.packet_id
+
+        if (packet.packet_id & ~SYNC_PACKET_ID) != self.remote_pid:
+            logging.warning(
+                "Received packet id %08x but expected %08x",
+                packet.packet_id,
+                self.remote_pid,
+            )
+
+            # TODO: Send a resend
+
+        self.remote_pid = packet.packet_id ^ 0x01
+
         return packet
 
     def _handlePacket(self):
@@ -194,7 +208,7 @@ class DebugContext:
             " [SYNC]" if packet_id != ack_packet_id else "",
         )
 
-        ack_packet = pack(
+        ack_packet = struct.pack(
             "IHHII",
             CONTROL_PACKET_LEADER,
             PACKET_TYPE_KD_ACKNOWLEDGE,
@@ -220,7 +234,7 @@ class DebugContext:
             logging.critical("Resend requested but no packets have been sent!")
 
     def _send_reset(self):
-        reset_packet = pack(
+        reset_packet = struct.pack(
             "IHHII",
             CONTROL_PACKET_LEADER,
             PACKET_TYPE_KD_RESET,
@@ -228,20 +242,22 @@ class DebugContext:
             INITIAL_PACKET_ID | SYNC_PACKET_ID,
             0,
         )
+        self.next_pid = INITIAL_PACKET_ID ^ 0x01
 
         logging.debug("Sending reset packet\n\n")
         # print(hexformat(rst)
         self._send_packet(reset_packet)
 
     def _send_resend(self):
-        resend_packet = pack(
+        resend_packet = struct.pack(
             "IHHII",
             CONTROL_PACKET_LEADER,
             PACKET_TYPE_KD_RESEND,
             0,
-            INITIAL_PACKET_ID,
+            self.next_pid,
             0,
         )
+        self.next_pid ^= 0x01
         logging.debug("Sending resend packet\n\n")
         # print(hexformat(rst)
         self.connection.write(resend_packet)
@@ -360,8 +376,8 @@ class DebugContext:
             logging.info("Module list = %08x", modlist)
             logging.info("Debugger data = %08x", ddata)
 
-            return (osv, pv, kernbase, modlist, ddata)
-        return ("0.0", 0, 0, 0, 0)
+            return osv, pv, kernbase, modlist, ddata
+        return "0.0", 0, 0, 0, 0
 
     def _printVersionData(self):
         v = self._getVersionInfo()
@@ -409,8 +425,9 @@ class DebugContext:
     #         return buf
 
     def _sendManipulateStatePacket(self, payload):
-        pid = self.nextpid
-        header = pack(
+        pid = self.next_pid
+        self.next_pid ^= 0x01
+        header = struct.pack(
             "IHHII",
             PACKET_LEADER,
             PACKET_TYPE_KD_STATE_MANIPULATE,
@@ -446,25 +463,7 @@ class DebugContext:
 
         # Pad to sizeof the union in the DBGKD_MANINPULATE_STATE64 packet.
         packet += bytearray([0] * (56 - len(packet)))
-        # d = bytearray([0] * 56)
-        #
-        # d = patch_substr(d, 0, 4, "I", DbgKdContinueApi2)  # API Number
-        # d = patch_substr(d, 4, 2, "H", 0xFFFF)  # Processor level
-        # d = patch_substr(d, 6, 2, "H", 0x0000)  # Processor
-        # d = patch_substr(d, 8, 4, "I", HRESULT_STATUS_SUCCESS)  # Return status
-        #
-        # # Continue2 subpacket
-        # d = patch_substr(d, 12, 4, "I", HRESULT_STATUS_SUCCESS)  # ContinueStatus
-        # d = patch_substr(d, 16, 4, "I", 0x00000000)  # TraceFlag
-        # d = patch_substr(d, 20, 4, "I", 0x00000000)  # DR7
-        # d = patch_substr(d, 24, 4, "I", 0x00000001)  # CurrentSymbolStart
-        # d = patch_substr(d, 28, 4, "I", 0x00000001)  # CurrentSymbolEnd
 
-        # # substr( $d, 0,  4 ) = pack( "I", $DbgKdContinueApi2 );
-        # # substr( $d, 8,  4 ) = pack( "I", 0x00010001 );
-        # # substr( $d, 16, 4 ) = pack( "I", 0x00010001 );
-        # # substr( $d, 24, 4 ) = pack( "I", 0x400 );        # TraceFlag
-        # # substr( $d, 28, 4 ) = pack( "I", 0x01 );         # Dr7
         self._sendManipulateStatePacket(packet)
 
     def _sendDbgKdGetVersion(self):
@@ -546,7 +545,7 @@ class DebugContext:
     def _sendDbgKdWritePhysicalMemory(self, addr, data):
         writelen = len(data)
 
-        d = pack("III", DbgKdWritePhysicalMemoryApi, addr, writelen)
+        d = struct.pack("III", DbgKdWritePhysicalMemoryApi, addr, writelen)
         d += data
         self._sendManipulateStatePacket(d)
 
