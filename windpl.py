@@ -806,15 +806,22 @@ def main(args):
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level)
 
-    if args.create_fifo:
-        _create_fifos(args.named_pipe)
+    endpoint = None
+    if args.named_pipe:
+        if args.create_fifo:
+            _create_fifos(args.named_pipe)
+        endpoint = args.named_pipe
+    elif args.port:
+        endpoint = (args.host, args.port)
+    else:
+        raise RuntimeError(f"No supported transport method selected.")
 
     context = DebugContext()
-    context.connect(args.named_pipe)
+    context.connect(endpoint)
 
     context.run()
 
-    return 1
+    return 0
 
 
 if __name__ == "__main__":
@@ -823,8 +830,22 @@ if __name__ == "__main__":
         parser = argparse.ArgumentParser()
 
         parser.add_argument(
-            "named_pipe",
-            help="The path to the named pipe used by xemu",
+            "-p",
+            "--port",
+            type=int,
+            help="The TCP server port used by qemu."
+        )
+
+        parser.add_argument(
+            "--host",
+            help="The IP address of the host.",
+            default="localhost"
+        )
+
+        parser.add_argument(
+            "-np",
+            "--named_pipe",
+            help="The path to the named pipe used by qemu.",
         )
 
         parser.add_argument(
@@ -841,6 +862,11 @@ if __name__ == "__main__":
             action="store_true",
         )
 
-        return parser.parse_args()
+        args = parser.parse_args()
+
+        if not args.port and not args.named_pipe:
+            parser.error("At least one of '--port' or '--named-pipe' must be given.")
+
+        return args
 
     sys.exit(main(_parse_args()))

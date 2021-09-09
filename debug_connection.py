@@ -1,6 +1,8 @@
 """Abstract connection interface for kernel debugging."""
+
 import os
 import pathlib
+import socket
 
 
 class DebugConnection:
@@ -11,53 +13,59 @@ class DebugConnection:
         self._connection_write = None
         self._connection_read = None
 
+        self._recv = None
+        self._send = None
+
     def connect(self):
-        # FIXME: Add support for TCP sockets too
-        # self.client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        # self.client.connect(endpoint)
 
-        path = pathlib.Path(self.endpoint)
-        if not path.exists():
-
-            def require_fifo_exists(fifo_path):
-                path = pathlib.Path(fifo_path)
-                if not path.exists():
-                    raise Exception(
-                        "Qemu requires two pipes with a common base name and '.in' and '.out' suffixes. "
-                        "E.g., '/tmp/foo.in' and '/tmp/foo.out'."
-                    )
-
-                if not path.is_fifo():
-                    raise Exception(f"'{path.name}' is not a fifo.")
-
-            # The naming is from the perspective of qemu, so "in" is written to and "out" is read from.
-            write_fifo = f"{self.endpoint}.in"
-            read_fifo = f"{self.endpoint}.out"
-
-            require_fifo_exists(write_fifo)
-            require_fifo_exists(read_fifo)
-
-            flags = os.O_RDWR
-            if os.name == "nt":
-                flags |= os.O_BINARY
-
-            self._connection_write = os.open(write_fifo, flags)
-            self._connection_read = os.open(read_fifo, flags)
-
-            return
-
-        if path.is_fifo():
-            raise Exception(
-                "Qemu requires two pipes with a common base name and '.in' and '.out' suffixes. "
-                "E.g., '/tmp/foo.in' and '/tmp/foo.out'."
-            )
+        if type(self.endpoint) is tuple:
+            self._connect_socket(self.endpoint)
         else:
-            raise Exception(f"Unsupported connection type {self.endpoint}")
+            self._connect_fifo(self.endpoint)
+
+    def _connect_socket(self, host_port):
+        self._connection_read = socket.socket()
+        self._connection_write = self._connection_read
+        self._connection_read.connect(host_port)
+        self._recv = self._recv_socket
+        self._send = self._send_socket
+
+    def _connect_fifo(self, path):
+        """Connects via a pair of .in and .out named pipes."""
+
+        def require_fifo_exists(fifo_path):
+            path_object = pathlib.Path(fifo_path)
+            if not path_object.exists():
+                raise Exception(
+                    "Qemu requires two pipes with a common base name and '.in' and '.out' suffixes. "
+                    "E.g., '/tmp/foo.in' and '/tmp/foo.out'."
+                )
+
+            if not path_object.is_fifo():
+                raise Exception(f"'{path_object.name}' is not a fifo.")
+
+        # The naming is from the perspective of qemu, so "in" is written to and "out" is read from.
+        write_fifo = f"{path}.in"
+        read_fifo = f"{path}.out"
+
+        require_fifo_exists(write_fifo)
+        require_fifo_exists(read_fifo)
+
+        flags = os.O_RDWR
+        if os.name == "nt":
+            flags |= os.O_BINARY
+
+        self._connection_write = os.open(write_fifo, flags)
+        self._connection_read = os.open(read_fifo, flags)
+
+        self._recv = self._recv_fifo
+        self._send = self._send_fifo
+
 
     def disconnect(self):
         pass
 
-    def recv(self, max_bytes):
+    def _recv_fifo(self, max_bytes):
         """Receives up to `max_bytes` bytes from the connection."""
         bytes_read = os.read(self._connection_read, max_bytes)
         if len(bytes_read) == 0:
@@ -65,8 +73,20 @@ class DebugConnection:
 
         return bytes_read
 
-    def send(self, buf):
+    def _send_fifo(self, buf):
+        """Sends some or all of the given buf, returns the number of bytes actually sent."""
         return os.write(self._connection_write, buf)
+
+    def _recv_socket(self, max_bytes):
+        """Receives up to `max_bytes` bytes from the connection."""
+        bytes_read = self._connection_read.recv(max_bytes)
+        if len(bytes_read) == 0:
+            print("Failed to read from connection")
+        return bytes_read
+
+    def _send_socket(self, buf):
+        """Sends some or all of the given buf, returns the number of bytes actually sent."""
+        return self._connection_write(buf)
 
     def read(self, wanted):
         """Reads exactly `wanted` bytes from the connection, blocking as necessary."""
@@ -83,7 +103,7 @@ class DebugConnection:
             #             die("eof")
             #             # print("client.read count %x\n", ord(buf)
             #         # FH.blocking(0)
-            buf = self.recv(wanted - total)
+            buf = self._recv(wanted - total)
 
             count = len(buf)
             if count:
@@ -96,5 +116,5 @@ class DebugConnection:
         """Writes `buffer` to the connection, blocking as necessary."""
 
         while len(buffer):
-            written = self.send(buffer)
+            written = self._send(buffer)
             buffer = buffer[written:]
