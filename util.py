@@ -94,10 +94,13 @@ def hexasc(buf):
     ascii_string = ""
     out = "0000  "
     for value in buf:
-        codepoint = ord(value)
+        if isinstance(value, str):
+            codepoint = ord(value)
+        else:
+            codepoint = value
         out += "%02x " % codepoint
         if 0x1F < codepoint < 0x7F:
-            ascii_string += value
+            ascii_string += chr(codepoint)
         else:
             ascii_string += "."
         count += 1
@@ -106,7 +109,7 @@ def hexasc(buf):
                 out += " " + ascii_string + "\n%04x  " % count
             else:
                 out += " " + ascii_string + "\n"
-                ascii_string = ""
+            ascii_string = ""
 
     padding = 0
     if ascii_string:
