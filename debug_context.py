@@ -162,8 +162,8 @@ class DebugContext:
                     self.remote_pid = packet.packet_id ^ 0x01
                     break
 
-                logging.warning(
-                    "Received packet id %08x but expected %08x",
+                logging.debug(
+                    "!!! Received packet id %08x but expected %08x",
                     (packet.packet_id & ~SYNC_PACKET_ID),
                     self.remote_pid,
                 )
@@ -180,8 +180,8 @@ class DebugContext:
                     self.next_pid,
                 )
             else:
-                logging.warning(
-                    "Received ack packet with id %08x but expected %08x",
+                logging.debug(
+                    "!!! Received ack packet with id %08x but expected %08x",
                     packet.packet_id,
                     self.next_pid,
                 )
@@ -554,8 +554,8 @@ class DebugContext:
                 )
                 break
             else:
-                logging.warning(
-                    "Received ack packet with id %08x but expected %08x while awaiting ack for continue2",
+                logging.debug(
+                    "!!! Received ack packet with id %08x but expected %08x while awaiting ack for continue2",
                     packet.packet_id,
                     self.next_pid,
                 )
