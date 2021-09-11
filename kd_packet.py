@@ -62,7 +62,7 @@ class KDPacket:
 
         self.actual_checksum = util.generate_checksum(payload)
 
-    def serialize(self) -> [bytearray]:
+    def serialize(self) -> bytearray:
         """Serializes this packet into a byte array (with trailing marker)."""
         header = struct.pack(
             "IHHII",
@@ -73,11 +73,11 @@ class KDPacket:
             self.actual_checksum,
         )
 
-        ret = [header]
+        ret = header
         if self.payload:
-            ret.append(self.payload)
+            ret += self.payload
         if self.needs_ack:
-            ret.append(bytes([constants.PACKET_TRAILER]))
+            ret += bytearray([constants.PACKET_TRAILER])
         return ret
 
     @classmethod
@@ -117,6 +117,11 @@ class KDPacket:
         return constants.PACKET_TYPE_TABLE.get(self.packet_type, "<unknown>")
 
     @property
+    def is_control(self) -> bool:
+        """Indicates whether or not this is a CONTROL packet."""
+        return self.packet_leader == constants.CONTROL_PACKET_LEADER
+
+    @property
     def needs_ack(self) -> bool:
         """Indicates whether an ack should be expected for this packet."""
         return self.packet_leader == constants.PACKET_LEADER
@@ -142,6 +147,8 @@ class KDPacket:
         elif self.packet_type == constants.PACKET_TYPE_KD_STATE_CHANGE64:
             ret.append("")
             ret.extend(self._log_state_change64())
+        elif self.packet_type == constants.PACKET_TYPE_KD_DEBUG_IO:
+            ret.append("\nPayload:\n%s" % util.hexasc(self.payload))
         elif self.payload:
             ret.append("\nPayload:\n%s" % util.hexformat(self.payload))
 

@@ -123,18 +123,25 @@ class DebugContext:
                 hexformat(discarded_bytes),
             )
 
-        if (packet.packet_id & ~SYNC_PACKET_ID) != self.remote_pid:
-            logging.warning(
-                "Received packet id %08x but expected %08x",
-                packet.packet_id,
-                self.remote_pid,
-            )
-
-            # TODO: Send a resend
-
-        self.remote_pid = packet.packet_id ^ 0x01
-
         return packet
+
+    def _read_until_packet(self, expected_packet_type):
+        """Reads KD packets until the given packet type is found."""
+
+        while True:
+            packet = self._receive_packet()
+            if packet.packet_type == expected_packet_type:
+                return packet
+
+            if packet.packet_type == PACKET_TYPE_KD_RESET:
+                self._send_reset()
+                self._resend_packet()
+
+            if packet.packet_type == PACKET_TYPE_KD_RESEND:
+                self._resend_packet()
+
+            if packet.needs_ack:
+                self._send_ack(packet.packet_id)
 
     def _handlePacket(self):
         """Processes one packet from the connection."""
@@ -144,15 +151,48 @@ class DebugContext:
         # the ack w/ the same packet id is read (or a reset or resend is
         # encountered). At that point next_pid should be ^= 0x01.
 
-        packet = self._receive_packet()
-        self._log_packet(packet, self.elapsed_time_ms)
-        if packet.needs_ack:
-            self._send_ack(packet.packet_id)
+        while True:
+            packet = self._receive_packet()
+            self._log_packet(packet, self.elapsed_time_ms)
+
+            if packet.needs_ack:
+                self._send_ack(packet.packet_id)
+
+                if (packet.packet_id & ~SYNC_PACKET_ID) == self.remote_pid:
+                    self.remote_pid = packet.packet_id ^ 0x01
+                    break
+
+                logging.warning(
+                    "Received packet id %08x but expected %08x",
+                    (packet.packet_id & ~SYNC_PACKET_ID),
+                    self.remote_pid,
+                )
 
         ptype = packet.packet_type
         buf = packet.payload
 
-        if ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
+        if ptype == PACKET_TYPE_KD_ACKNOWLEDGE:
+            if packet.packet_id == (self.next_pid & ~SYNC_PACKET_ID):
+                self.next_pid ^= 0x01
+                logging.debug(
+                    ">>> Received correct ack packet 0x%x, new next_pid 0x%x",
+                    packet.packet_id,
+                    self.next_pid,
+                )
+            else:
+                logging.warning(
+                    "Received ack packet with id %08x but expected %08x",
+                    packet.packet_id,
+                    self.next_pid,
+                )
+
+        elif ptype == PACKET_TYPE_KD_RESET:
+            self._send_reset()
+
+        elif ptype == PACKET_TYPE_KD_RESEND:
+            self._resend_packet()
+
+        elif ptype == PACKET_TYPE_KD_STATE_MANIPULATE:
             self._handleStateManipulate(buf)
 
         elif ptype == PACKET_TYPE_KD_DEBUG_IO:
@@ -160,13 +200,6 @@ class DebugContext:
 
         elif ptype == PACKET_TYPE_KD_STATE_CHANGE64:
             self._handleStateChange(buf)
-
-        elif ptype == PACKET_TYPE_KD_RESET:
-            self.next_pid = INITIAL_PACKET_ID
-            self.remote_pid = INITIAL_PACKET_ID
-
-        elif ptype == PACKET_TYPE_KD_RESEND:
-            self._resend_packet()
 
         elif len(buf):
             logging.debug(
@@ -258,33 +291,49 @@ class DebugContext:
     def _send_packet(self, packet_data):
         if isinstance(packet_data, list):
             packet_data = bytearray(itertools.chain.from_iterable(packet_data))
-        self.last_packet = packet_data
-        self.connection.write(self.last_packet)
+        self.last_packet = kd_packet.KDPacket.parse(packet_data)
+
+        logging.debug(
+            "<<< Sending %s with id 0x%x\n",
+            self.last_packet.packet_type_name,
+            self.last_packet.packet_id,
+        )
+
+        self.connection.write(packet_data)
 
     def _resend_packet(self):
         if self.last_packet:
-            packet = kd_packet.KDPacket.parse(self.last_packet)
-            packet.packet_id = self.next_pid
-            self.next_pid ^= 1
-            logging.debug("Resending last packet: %s", "\n".join(packet.basic_log_info))
-            self._send_packet(packet.serialize())
+            self.last_packet.packet_id = self.next_pid
+            self.next_pid ^= 0x1
+            logging.debug(
+                "Resending last packet: %s", "\n".join(self.last_packet.basic_log_info)
+            )
+            self.connection.write(self.last_packet.serialize())
         else:
             logging.critical("Resend requested but no packets have been sent!")
 
     def _send_reset(self):
+        self.next_pid = INITIAL_PACKET_ID | SYNC_PACKET_ID
+        self.remote_pid = INITIAL_PACKET_ID
+
         reset_packet = struct.pack(
             "IHHII",
             CONTROL_PACKET_LEADER,
             PACKET_TYPE_KD_RESET,
             0,
-            INITIAL_PACKET_ID | SYNC_PACKET_ID,
+            self.next_pid,
             0,
         )
-        self.next_pid = INITIAL_PACKET_ID ^ 0x01
 
         logging.debug("Sending reset packet\n\n")
         # print(hexformat(rst)
         self._send_packet(reset_packet)
+
+        reset_ack = self._read_until_packet(PACKET_TYPE_KD_RESET)
+        logging.debug(
+            "Received reciprocal reset with packet id 0x%x", reset_ack.packet_id
+        )
+        self.next_pid = INITIAL_PACKET_ID
 
     def _send_resend(self):
         resend_packet = struct.pack(
@@ -464,7 +513,6 @@ class DebugContext:
 
     def _sendManipulateStatePacket(self, payload):
         pid = self.next_pid
-        self.next_pid ^= 0x01
         header = struct.pack(
             "IHHII",
             PACKET_LEADER,
@@ -473,14 +521,6 @@ class DebugContext:
             pid,
             generate_checksum(payload),
         )
-
-        logging.debug(
-            "Sending manipulate state [%08x]:\nHeader:\n%s\nBody:\n%s",
-            pid,
-            hexformat(header),
-            hexformat(payload),
-        )
-
         self._send_packet([header, payload, bytes([PACKET_TRAILER])])
 
     def _sendDbgKdContinue2(self):
@@ -489,10 +529,10 @@ class DebugContext:
         packet = struct.pack(
             "IHHIIIIII",
             DbgKdContinueApi2,  # API Number
-            0xFFFF,  # Processor level
+            0x0000,  # Processor level
             0x0000,  # Processor
             HRESULT_STATUS_SUCCESS,  # Return status
-            HRESULT_DBG_CONTINUE,  # ContinueStatus
+            HRESULT_STATUS_SUCCESS,  # ContinueStatus
             0x00000000,  # TraceFlag
             0x00000000,  # Dr7
             0x00000001,  # CurrentSymbolStart
@@ -503,6 +543,22 @@ class DebugContext:
         packet += bytearray([0] * (56 - len(packet)))
 
         self._sendManipulateStatePacket(packet)
+        while True:
+            packet = self._read_until_packet(PACKET_TYPE_KD_ACKNOWLEDGE)
+            if packet.packet_id == (self.next_pid & ~SYNC_PACKET_ID):
+                self.next_pid ^= 0x01
+                logging.debug(
+                    ">>> Received correct ack packet 0x%x, new next_pid 0x%x",
+                    packet.packet_id,
+                    self.next_pid,
+                )
+                break
+            else:
+                logging.warning(
+                    "Received ack packet with id %08x but expected %08x while awaiting ack for continue2",
+                    packet.packet_id,
+                    self.next_pid,
+                )
 
     def _sendDbgKdGetVersion(self):
 
